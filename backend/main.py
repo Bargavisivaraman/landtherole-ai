@@ -267,7 +267,27 @@ def analyze_jd_match(resume_text: str, jd_text: str) -> dict:
         "from", "they", "been", "their", "your", "our", "all", "can", "not", "but",
         "about", "work", "role", "team", "join", "must", "able", "well", "also",
         "each", "into", "more", "some", "such", "than", "then", "there", "these",
-        "those", "what", "when", "which", "who", "why", "how"
+        "those", "what", "when", "which", "who", "why", "how",
+        # location & logistics
+        "level", "location", "united", "states", "remote", "hybrid", "onsite",
+        "office", "fulltime", "parttime", "contract", "permanent", "relocation",
+        # generic job posting words
+        "responsibilities", "maintain", "modern", "consume", "functional",
+        "including", "position", "looking", "salary", "benefits", "equal",
+        "opportunity", "employer", "apply", "candidate", "candidates", "qualified",
+        "minimum", "preferred", "required", "plus", "bonus",
+        # vague adjectives
+        "strong", "excellent", "ability", "skills", "knowledge", "understanding",
+        "familiar", "familiarity", "proficiency", "proficient", "comfortable",
+        "passionate", "motivated", "driven", "detail", "oriented", "fast", "paced",
+        # company generic words
+        "company", "organization", "business", "product", "products", "service",
+        "services", "customer", "client", "clients", "users", "startup", "environment",
+        # prepositions & conjunctions
+        "across", "within", "without", "between", "through", "during",
+        "before", "after", "above", "below", "other", "using", "based",
+        # numbers & time
+        "years", "experience", "year", "month", "week", "time", "day",
     }
     jd_keywords = list(dict.fromkeys([w for w in jd_words if w not in stopwords and len(w) > 3]))[:80]
     matched = [kw for kw in jd_keywords if kw in resume_lower]
@@ -382,10 +402,10 @@ Return this exact JSON:
         )
 
         structured_output = json.loads(response.choices[0].message.content.strip())
-        structured_output["ats_score"]    = ats_score
+        structured_output["ats_score"]     = ats_score
         structured_output["ats_breakdown"] = ats_breakdown
-        structured_output["weak_bullets"] = weak_bullets
-        structured_output["jd_match"]     = jd_match
+        structured_output["weak_bullets"]  = weak_bullets
+        structured_output["jd_match"]      = jd_match
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Model returned invalid JSON")
