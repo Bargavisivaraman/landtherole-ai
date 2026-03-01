@@ -1,0 +1,57 @@
+from fastapi import FastAPI, File, UploadFile
+from PyPDF2 import PdfReader
+import io
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "Resume Analyzer API running"}
+
+@app.post("/upload-resume/")
+async def upload_resume(file: UploadFile = File(...)):
+    contents = await file.read()
+    
+    pdf = PdfReader(io.BytesIO(contents))
+    text = ""
+
+    for page in pdf.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted
+
+    return {
+        "filename": file.filename,
+        "extracted_text_preview": text[:500]
+    }import io
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "Resume Analyzer API running"}
+
+@app.post("/upload-resume/")
+async def upload_resume(file: UploadFile = File(...)):
+    contents = await file.read()
+    
+    pdf = PdfReader(io.BytesIO(contents))
+    text = ""
+
+    for page in pdf.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted
+
+    return {
+        "filename": file.filename,
+        "extracted_text_preview": text[:500]
+    }from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "Resume Analyzer API running"}
+
+
