@@ -288,6 +288,24 @@ def analyze_jd_match(resume_text: str, jd_text: str) -> dict:
         "before", "after", "above", "below", "other", "using", "based",
         # numbers & time
         "years", "experience", "year", "month", "week", "time", "day",
+        # cities & locations
+        "francisco", "angeles", "york", "chicago", "austin", "seattle",
+        "boston", "denver", "atlanta", "dallas", "london", "toronto",
+        # more generic filler
+        "ideal", "enjoy", "working", "write", "clean", "thousands", "seeking",
+        "contribute", "full", "used", "daily", "collaborating", "development",
+        "interfaces", "frontend", "backend", "responsive", "environments",
+        "stack", "engineering", "applications", "deployment", "scalable",
+        "looking", "great", "good", "best", "high", "low", "new", "old",
+        "large", "small", "many", "few", "every", "never", "always", "often",
+        "help", "make", "take", "need", "want", "love", "like", "know",
+        "think", "feel", "come", "give", "find", "keep", "let", "put",
+        "seem", "turn", "show", "hear", "play", "run", "move", "live",
+        "believe", "hold", "bring", "happen", "write", "provide", "include",
+        "continue", "set", "learn", "change", "lead", "understand", "watch",
+        "follow", "stop", "create", "speak", "read", "spend", "grow", "open",
+        "walk", "win", "offer", "remember", "love", "consider", "appear",
+        "ensure", "drive", "support", "manage", "review", "maintain",
     }
     jd_keywords = list(dict.fromkeys([w for w in jd_words if w not in stopwords and len(w) > 3]))[:80]
     matched = [kw for kw in jd_keywords if kw in resume_lower]
