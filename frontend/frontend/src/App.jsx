@@ -92,7 +92,7 @@ function BulletRewriter({ bullets, jobContext }) {
     setResult(null);
     setCopied(false);
     try {
-      const res = await fetch("http://127.0.0.1:8000/rewrite-bullet/", {
+      const res = await fetch("https://YOUR-RENDER-URL.onrender.com/rewrite-bullet/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bullet, job_context: jobContext || "" }),
@@ -170,7 +170,7 @@ function App() {
     formData.append("file", file);
     if (jdText.trim()) formData.append("job_description", jdText.trim());
     try {
-      const res = await fetch("http://127.0.0.1:8000/analyze-resume/", { method: "POST", body: formData });
+      const res = await fetch("https://YOUR-RENDER-URL.onrender.com/analyze-resume/", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to analyze resume");
       setResult(data);
