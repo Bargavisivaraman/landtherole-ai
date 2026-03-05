@@ -4,7 +4,7 @@ import "./App.css";
 function Footer() {
   return (
     <footer className="footer">
-      <p><span>LandTheRole.ai</span> · Built by Bargavi Sivaraman · © 2026</p>
+      <p><span>Resume AI Analyzer</span> · Built by Bargavi Sivaraman · © 2026</p>
     </footer>
   );
 }
@@ -92,7 +92,7 @@ function BulletRewriter({ bullets, jobContext }) {
     setResult(null);
     setCopied(false);
     try {
-      const res = await fetch("https://landtherole-ai.onrender.com/rewrite-bullet/", {
+      const res = await fetch("http://127.0.0.1:8000/rewrite-bullet/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bullet, job_context: jobContext || "" }),
@@ -170,7 +170,7 @@ function App() {
     formData.append("file", file);
     if (jdText.trim()) formData.append("job_description", jdText.trim());
     try {
-      const res = await fetch("https://landtherole-ai.onrender.com/analyze-resume/", { method: "POST", body: formData });
+      const res = await fetch("http://127.0.0.1:8000/analyze-resume/", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to analyze resume");
       setResult(data);
@@ -202,7 +202,7 @@ function App() {
         <>
           <div className="hero">
             <div className="card">
-              <div className="logo-tag">🚀 LandTheRole.ai</div>
+              <div className="logo-tag">🎯 LandTheRole.ai</div>
               <h1>Get Hired Faster</h1>
               <p>AI-powered resume scoring, job match analysis, and instant bullet rewrites — built to get you shortlisted.</p>
 
