@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Query
 from pydantic import BaseModel
 from typing import List, Optional
 from PyPDF2 import PdfReader
@@ -7,7 +7,12 @@ from dotenv import load_dotenv
 import io
 import json
 import os
+import httpx
+import asyncio
 from fastapi.middleware.cors import CORSMiddleware
+from supabase import create_client, Client
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timezone
 import re
 
 load_dotenv()
@@ -16,14 +21,34 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://landtherole-ai.vercel.app"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://landtherole-ai.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# ─────────────────────────────────────────────────────────────────────────────
+# CLIENTS
+# ─────────────────────────────────────────────────────────────────────────────
 
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
+)
+
+JSEARCH_API_KEY = os.getenv("JSEARCH_API_KEY")
+JSEARCH_BASE    = "https://jsearch.p.rapidapi.com"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODELS
+# ─────────────────────────────────────────────────────────────────────────────
 
 class ResumeAnalysis(BaseModel):
     summary_feedback: str
@@ -47,28 +72,36 @@ class RewriteResponse(BaseModel):
     explanation: str
 
 
-def extract_text_from_pdf(contents: bytes) -> str:
-    pdf = PdfReader(io.BytesIO(contents))
-    text = ""
-    for page in pdf.pages:
-        extracted = page.extract_text()
-        if extracted:
-            text += extracted + "\n"
-    return text
+class InterviewRequest(BaseModel):
+    resume_text: Optional[str] = ""
+    job_description: str
+    num_questions: Optional[int] = 10
 
 
-def is_valid_resume(text: str) -> bool:
-    text_lower = text.lower()
-    resume_signals = [
-        "experience", "work experience", "education", "skills", "projects",
-        "summary", "objective", "employment", "career", "qualifications"
-    ]
-    signal_hits = sum(1 for s in resume_signals if s in text_lower)
-    has_email = bool(re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text))
-    has_dates = bool(re.search(r"(19|20)\d{2}", text))
-    word_count = len(text.split())
-    return word_count >= 200 and signal_hits >= 2 and has_email and has_dates
+class InterviewResponse(BaseModel):
+    questions: List[dict]
+    role_summary: str
+    difficulty: str
 
+
+class EvaluateRequest(BaseModel):
+    question: str
+    answer: str
+    job_description: Optional[str] = ""
+    resume_text: Optional[str] = ""
+
+
+class EvaluateResponse(BaseModel):
+    score: int
+    feedback: str
+    improved_answer: str
+    keywords_used: List[str]
+    keywords_missing: List[str]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
 
 SECTION_WEIGHTS = {
     "experience":     {"aliases": ["experience", "work experience", "employment history", "professional experience"], "weight": 20},
@@ -106,106 +139,200 @@ WEAK_ACTION_PHRASES = [
     "dealt with", "tried to"
 ]
 
+TECH_PHRASES = [
+    "machine learning", "deep learning", "natural language processing",
+    "computer vision", "reinforcement learning", "large language models",
+    "generative ai", "prompt engineering", "object oriented", "functional programming",
+    "test driven development", "react.js", "next.js", "vue.js", "node.js",
+    "react native", "single page application", "responsive design",
+    "rest api", "restful api", "graphql api", "microservices architecture",
+    "event driven", "message queue", "api gateway", "load balancing",
+    "continuous integration", "continuous deployment", "ci/cd",
+    "github actions", "amazon web services", "google cloud platform",
+    "infrastructure as code", "container orchestration", "serverless architecture",
+    "data pipeline", "etl pipeline", "data warehouse", "data lake",
+    "real time processing", "feature engineering", "a/b testing",
+    "statistical analysis", "business intelligence", "data visualization",
+    "relational database", "nosql database", "vector database",
+    "full stack", "full-stack", "cross functional", "agile methodology",
+    "system design", "distributed systems", "high availability",
+    "technical lead", "code review", "software architecture",
+    "penetration testing", "zero trust", "oauth 2.0",
+    "problem solving", "stakeholder management",
+]
+
+NORMALIZATION_MAP = {
+    "react.js":   ["reactjs"],
+    "node.js":    ["nodejs"],
+    "next.js":    ["nextjs"],
+    "vue.js":     ["vuejs"],
+    "ci/cd":      ["cicd", "ci cd"],
+    "c++":        ["cpp"],
+    "c#":         ["csharp"],
+    "aws":        ["amazon web services"],
+    "gcp":        ["google cloud platform", "google cloud"],
+    "k8s":        ["kubernetes"],
+    "ml":         ["machine learning"],
+    "nlp":        ["natural language processing"],
+}
+
+STOPWORDS = {
+    "the","and","for","are","you","with","that","this","will","have","from",
+    "they","been","their","your","our","all","can","not","but","about","work",
+    "role","team","join","must","able","well","also","each","into","more",
+    "some","such","than","then","there","these","those","what","when","which",
+    "who","why","how","level","location","united","states","remote","hybrid",
+    "onsite","office","fulltime","parttime","contract","permanent",
+    "responsibilities","maintain","modern","consume","functional","including",
+    "position","looking","salary","benefits","equal","opportunity","employer",
+    "apply","candidate","candidates","qualified","minimum","preferred","required",
+    "plus","bonus","strong","excellent","ability","skills","knowledge",
+    "understanding","familiar","familiarity","proficiency","proficient",
+    "comfortable","passionate","motivated","driven","detail","oriented","fast",
+    "paced","company","organization","business","product","products","service",
+    "services","customer","client","clients","users","startup","environment",
+    "across","within","without","between","through","during","before","after",
+    "above","below","other","using","based","years","experience","year","month",
+    "week","time","day","francisco","angeles","york","chicago","austin","seattle",
+    "boston","denver","atlanta","dallas","london","toronto","ideal","enjoy",
+    "working","write","clean","seeking","contribute","full","used","daily",
+    "collaborating","development","interfaces","responsive","environments",
+    "stack","engineering","applications","deployment","scalable","great",
+    "good","best","high","low","new","old","large","small","many","few",
+    "help","make","take","need","want","know","think","come","give","find",
+    "provide","include","continue","set","learn","change","lead","understand",
+    "ensure","drive","support","manage","review",
+}
+
+INDIA_QUERIES = [
+    "software engineer India",
+    "data scientist India",
+    "product manager India",
+    "frontend developer India",
+    "backend developer India",
+]
+US_QUERIES = [
+    "software engineer USA",
+    "data scientist USA",
+    "product manager USA",
+    "frontend developer USA",
+    "machine learning engineer USA",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_text_from_pdf(contents: bytes) -> str:
+    pdf  = PdfReader(io.BytesIO(contents))
+    text = ""
+    for page in pdf.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
+    return text
+
+
+def is_valid_resume(text: str) -> bool:
+    text_lower  = text.lower()
+    signals     = ["experience", "work experience", "education", "skills", "projects",
+                   "summary", "objective", "employment", "career", "qualifications"]
+    signal_hits = sum(1 for s in signals if s in text_lower)
+    has_email   = bool(re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text))
+    has_dates   = bool(re.search(r"(19|20)\d{2}", text))
+    return len(text.split()) >= 200 and signal_hits >= 2 and has_email and has_dates
+
+
+def normalize_text(text: str) -> str:
+    t = text.lower()
+    for canonical, variants in NORMALIZATION_MAP.items():
+        for v in variants:
+            t = t.replace(v, canonical)
+    t = re.sub(r'[^\w\s#+./]', ' ', t)
+    t = re.sub(r'\s+', ' ', t)
+    return t
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ATS SCORERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def score_sections(text_lower):
-    breakdown = {}
-    total = 0
+    breakdown, total = {}, 0
     for section, cfg in SECTION_WEIGHTS.items():
         found = any(alias in text_lower for alias in cfg["aliases"])
-        pts = cfg["weight"] if found else 0
+        pts   = cfg["weight"] if found else 0
         total += pts
         breakdown[section] = {"found": found, "points": pts, "max": cfg["weight"]}
     return total, breakdown
 
 
 def score_quantification(text):
-    lines = re.split(r'\n', text)
+    lines        = re.split(r'\n', text)
     bullet_lines = [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in lines if len(l.strip()) > 20]
     if not bullet_lines:
         return 0, {"metric_density": 0, "points": 0, "max": 30}
-    metric_pattern = re.compile(
+    pattern = re.compile(
         r'(\d+[\.,]?\d*\s*(%|percent|x|times|k|m|bn|million|billion|thousand)?|\$[\d,]+|increased|decreased|reduced|improved|grew|saved|generated)\b',
         re.IGNORECASE
     )
-    lines_with_metrics = sum(1 for line in bullet_lines if metric_pattern.search(line))
-    density = lines_with_metrics / len(bullet_lines)
+    hits    = sum(1 for l in bullet_lines if pattern.search(l))
+    density = hits / len(bullet_lines)
     if density >= 0.60:   pts = 30
     elif density >= 0.45: pts = 24
     elif density >= 0.30: pts = 18
     elif density >= 0.15: pts = 10
     elif density >= 0.05: pts = 5
     else:                 pts = 0
-    return pts, {
-        "bullet_lines_found": len(bullet_lines),
-        "lines_with_metrics": lines_with_metrics,
-        "metric_density_pct": round(density * 100, 1),
-        "points": pts,
-        "max": 30
-    }
+    return pts, {"bullet_lines_found": len(bullet_lines), "lines_with_metrics": hits,
+                 "metric_density_pct": round(density * 100, 1), "points": pts, "max": 30}
 
 
 def score_action_verbs(text):
-    lines = [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in text.split("\n") if len(l.strip()) > 20]
-    strong_hits = sum(1 for line in lines if any(line.lower().startswith(verb) for verb in STRONG_ACTION_VERBS))
-    weak_hits = sum(1 for line in lines if any(line.lower().startswith(phrase) for phrase in WEAK_ACTION_PHRASES))
-    strong_ratio = strong_hits / max(len(lines), 1)
-    if strong_ratio >= 0.60:   pts = 20
-    elif strong_ratio >= 0.40: pts = 15
-    elif strong_ratio >= 0.20: pts = 10
-    elif strong_ratio >= 0.05: pts = 5
-    else:                      pts = 2
-    penalty = min(weak_hits * 3, 10)
-    pts = max(0, pts - penalty)
-    return pts, {
-        "strong_verb_lines": strong_hits,
-        "weak_phrase_lines": weak_hits,
-        "strong_ratio_pct": round(strong_ratio * 100, 1),
-        "penalty_applied": penalty,
-        "points": pts,
-        "max": 20
-    }
+    lines  = [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in text.split("\n") if len(l.strip()) > 20]
+    strong = sum(1 for l in lines if any(l.lower().startswith(v) for v in STRONG_ACTION_VERBS))
+    weak   = sum(1 for l in lines if any(l.lower().startswith(p) for p in WEAK_ACTION_PHRASES))
+    ratio  = strong / max(len(lines), 1)
+    if ratio >= 0.60:   pts = 20
+    elif ratio >= 0.40: pts = 15
+    elif ratio >= 0.20: pts = 10
+    elif ratio >= 0.05: pts = 5
+    else:               pts = 2
+    penalty = min(weak * 3, 10)
+    pts     = max(0, pts - penalty)
+    return pts, {"strong_verb_lines": strong, "weak_phrase_lines": weak,
+                 "strong_ratio_pct": round(ratio * 100, 1), "penalty_applied": penalty,
+                 "points": pts, "max": 20}
 
 
 def score_keyword_relevance(text_lower):
-    domain_hits = {domain: [kw for kw in keywords if kw in text_lower] for domain, keywords in KEYWORD_GROUPS.items()}
-    domains_covered = sum(1 for hits in domain_hits.values() if hits)
-    total_keywords = sum(len(hits) for hits in domain_hits.values())
-    breadth_pts = min(domains_covered * 2, 15)
-    if total_keywords >= 20:   depth_pts = 15
-    elif total_keywords >= 12: depth_pts = 11
-    elif total_keywords >= 7:  depth_pts = 7
-    elif total_keywords >= 3:  depth_pts = 4
-    else:                      depth_pts = 1
-    pts = breadth_pts + depth_pts
-    return pts, {
-        "domains_covered": domains_covered,
-        "total_keywords_found": total_keywords,
-        "per_domain": {d: len(h) for d, h in domain_hits.items()},
-        "breadth_points": breadth_pts,
-        "depth_points": depth_pts,
-        "points": pts,
-        "max": 30
-    }
+    domain_hits     = {d: [kw for kw in kws if kw in text_lower] for d, kws in KEYWORD_GROUPS.items()}
+    domains_covered = sum(1 for h in domain_hits.values() if h)
+    total_kw        = sum(len(h) for h in domain_hits.values())
+    breadth = min(domains_covered * 2, 15)
+    if total_kw >= 20:   depth = 15
+    elif total_kw >= 12: depth = 11
+    elif total_kw >= 7:  depth = 7
+    elif total_kw >= 3:  depth = 4
+    else:                depth = 1
+    pts = breadth + depth
+    return pts, {"domains_covered": domains_covered, "total_keywords_found": total_kw,
+                 "per_domain": {d: len(h) for d, h in domain_hits.items()},
+                 "breadth_points": breadth, "depth_points": depth, "points": pts, "max": 30}
 
 
 def score_length_and_format(text):
-    word_count = len(text.split())
-    if 350 <= word_count <= 800:   length_pts = 10
-    elif 250 <= word_count < 350:  length_pts = 7
-    elif 800 < word_count <= 1100: length_pts = 8
-    elif word_count > 1100:        length_pts = 4
-    else:                          length_pts = 3
-    bullet_count = len(re.findall(r'^\s*[-•▪▸►◦●✓✔*]', text, re.MULTILINE))
-    format_pts = min(bullet_count // 3, 5)
-    pts = length_pts + format_pts
-    return pts, {
-        "word_count": word_count,
-        "bullet_count": bullet_count,
-        "length_points": length_pts,
-        "format_points": format_pts,
-        "points": pts,
-        "max": 15
-    }
+    wc = len(text.split())
+    if 350 <= wc <= 800:   lp = 10
+    elif 250 <= wc < 350:  lp = 7
+    elif 800 < wc <= 1100: lp = 8
+    elif wc > 1100:        lp = 4
+    else:                  lp = 3
+    bc = len(re.findall(r'^\s*[-•▪▸►◦●✓✔*]', text, re.MULTILINE))
+    fp = min(bc // 3, 5)
+    return lp + fp, {"word_count": wc, "bullet_count": bc, "length_points": lp,
+                     "format_points": fp, "points": lp + fp, "max": 15}
 
 
 def score_contact_info(text):
@@ -213,128 +340,366 @@ def score_contact_info(text):
         "email":    bool(re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)),
         "phone":    bool(re.search(r"\+?\d[\d\s\-().]{7,}\d", text)),
         "linkedin": bool(re.search(r"linkedin", text, re.IGNORECASE)),
-        "github":   bool(re.search(r"github", text, re.IGNORECASE)),
+        "github":   bool(re.search(r"github",   text, re.IGNORECASE)),
         "location": bool(re.search(r"\b[A-Z][a-z]+,\s*[A-Z]{2}\b|\bremote\b", text)),
     }
     pts = sum([3, 2, 2, 2, 1][i] for i, v in enumerate(checks.values()) if v)
     return min(pts, 10), {"checks": checks, "points": min(pts, 10), "max": 10}
 
 
-def calculate_ats_score(text):
-    text_lower = text.lower()
-    section_raw, section_detail = score_sections(text_lower)
-    quant_pts, quant_detail     = score_quantification(text)
-    verb_pts, verb_detail       = score_action_verbs(text)
-    kw_pts, kw_detail           = score_keyword_relevance(text_lower)
-    len_pts, len_detail         = score_length_and_format(text)
-    contact_pts, contact_detail = score_contact_info(text)
-    max_section_raw = sum(cfg["weight"] for cfg in SECTION_WEIGHTS.values())
-    section_pts = round((section_raw / max_section_raw) * 30)
-    raw_total = section_pts + quant_pts + verb_pts + kw_pts + len_pts + contact_pts
-    max_possible = 135
-    scaled = round((raw_total / max_possible) * 100)
-    final_score = min(max(scaled, 1), 97)
-    breakdown = {
-        "sections":       {**section_detail, "normalised_points": section_pts, "max": 30},
-        "quantification": quant_detail,
-        "action_verbs":   verb_detail,
-        "keywords":       kw_detail,
-        "length_format":  len_detail,
-        "contact_info":   contact_detail,
-        "raw_total":      raw_total,
-        "max_possible":   max_possible,
-        "final_score":    final_score,
+# ─────────────────────────────────────────────────────────────────────────────
+# JD MATCHING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_jd_match(resume_text: str, jd_text: str) -> dict:
+    rn = normalize_text(resume_text)
+    jn = normalize_text(jd_text)
+
+    found_phrases   = [p for p in TECH_PHRASES if p in jn]
+    matched_phrases = [p for p in found_phrases if p in rn]
+    missing_phrases = [p for p in found_phrases if p not in rn]
+
+    phrase_words    = set(w for p in found_phrases for w in p.split())
+    jd_words        = re.findall(r'\b[a-z][a-z+#.]{2,}\b', jn)
+    singles         = list(dict.fromkeys([
+        w for w in jd_words
+        if w not in STOPWORDS and len(w) > 3 and w not in phrase_words
+    ]))[:60]
+
+    matched_singles = [k for k in singles if k in rn]
+    missing_singles = [k for k in singles if k not in rn]
+
+    wm    = (len(matched_phrases) * 2) + len(matched_singles)
+    wt    = (len(found_phrases)   * 2) + len(singles)
+    match = min(round((wm / max(wt, 1)) * 100), 98)
+
+    if match >= 75:   verdict, color = "Strong Match",   "green"
+    elif match >= 50: verdict, color = "Moderate Match", "yellow"
+    else:             verdict, color = "Weak Match",     "red"
+
+    top_missing = missing_phrases[:6] + missing_singles[:6]
+    suggestions = (
+        [f"Add '{i}' — key multi-word skill from this JD missing in your resume" for i in missing_phrases[:3]] +
+        [f"Include '{i}' in your skills or experience section" for i in missing_singles[:4]]
+    )
+
+    return {
+        "match_pct":         match,
+        "matched_keywords":  matched_phrases[:5] + matched_singles[:10],
+        "missing_keywords":  top_missing,
+        "matched_phrases":   matched_phrases,
+        "missing_phrases":   missing_phrases[:6],
+        "total_jd_keywords": len(found_phrases) + len(singles),
+        "verdict":           verdict,
+        "verdict_color":     color,
+        "suggestions":       suggestions[:7],
     }
-    return final_score, breakdown
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ATS MASTER SCORER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def calculate_ats_score(text: str, jd_text: Optional[str] = None):
+    tl = text.lower()
+    sr, sd = score_sections(tl)
+    qp, qd = score_quantification(text)
+    vp, vd = score_action_verbs(text)
+    kp, kd = score_keyword_relevance(tl)
+    lp, ld = score_length_and_format(text)
+    cp, cd = score_contact_info(text)
+
+    sp     = round((sr / sum(c["weight"] for c in SECTION_WEIGHTS.values())) * 30)
+    raw    = sp + qp + vp + kp + lp + cp
+    scaled = round((raw / 135) * 100)
+
+    penalty, boost = 0, 0
+    if jd_text and jd_text.strip():
+        jd = analyze_jd_match(text, jd_text)
+        mp = jd["match_pct"]
+        if mp < 40:    penalty = 12
+        elif mp < 55:  penalty = 6
+        elif mp >= 75: boost   = 5
+
+    final = min(max(scaled - penalty + boost, 1), 97)
+    return final, {
+        "sections":       {**sd, "normalised_points": sp, "max": 30},
+        "quantification": qd,
+        "action_verbs":   vd,
+        "keywords":       kd,
+        "length_format":  ld,
+        "contact_info":   cd,
+        "raw_total":      raw,
+        "max_possible":   135,
+        "jd_penalty":     penalty,
+        "jd_boost":       boost,
+        "final_score":    final,
+    }
 
 
 def extract_weak_bullets(text):
     lines = [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in text.split("\n") if len(l.strip()) > 20]
-    weak = []
-    for line in lines:
-        ll = line.lower()
-        if any(ll.startswith(phrase) for phrase in WEAK_ACTION_PHRASES):
-            weak.append(line)
-    return weak[:6]
+    return [l for l in lines if any(l.lower().startswith(p) for p in WEAK_ACTION_PHRASES)][:6]
 
 
-def analyze_jd_match(resume_text: str, jd_text: str) -> dict:
-    resume_lower = resume_text.lower()
-    jd_lower = jd_text.lower()
-    jd_words = re.findall(r'\b[a-z][a-z+#.]{2,}\b', jd_lower)
-    stopwords = {
-        "the", "and", "for", "are", "you", "with", "that", "this", "will", "have",
-        "from", "they", "been", "their", "your", "our", "all", "can", "not", "but",
-        "about", "work", "role", "team", "join", "must", "able", "well", "also",
-        "each", "into", "more", "some", "such", "than", "then", "there", "these",
-        "those", "what", "when", "which", "who", "why", "how",
-        # location & logistics
-        "level", "location", "united", "states", "remote", "hybrid", "onsite",
-        "office", "fulltime", "parttime", "contract", "permanent", "relocation",
-        # generic job posting words
-        "responsibilities", "maintain", "modern", "consume", "functional",
-        "including", "position", "looking", "salary", "benefits", "equal",
-        "opportunity", "employer", "apply", "candidate", "candidates", "qualified",
-        "minimum", "preferred", "required", "plus", "bonus",
-        # vague adjectives
-        "strong", "excellent", "ability", "skills", "knowledge", "understanding",
-        "familiar", "familiarity", "proficiency", "proficient", "comfortable",
-        "passionate", "motivated", "driven", "detail", "oriented", "fast", "paced",
-        # company generic words
-        "company", "organization", "business", "product", "products", "service",
-        "services", "customer", "client", "clients", "users", "startup", "environment",
-        # prepositions & conjunctions
-        "across", "within", "without", "between", "through", "during",
-        "before", "after", "above", "below", "other", "using", "based",
-        # numbers & time
-        "years", "experience", "year", "month", "week", "time", "day",
-        # cities & locations
-        "francisco", "angeles", "york", "chicago", "austin", "seattle",
-        "boston", "denver", "atlanta", "dallas", "london", "toronto",
-        # more generic filler
-        "ideal", "enjoy", "working", "write", "clean", "thousands", "seeking",
-        "contribute", "full", "used", "daily", "collaborating", "development",
-        "interfaces", "frontend", "backend", "responsive", "environments",
-        "stack", "engineering", "applications", "deployment", "scalable",
-        "looking", "great", "good", "best", "high", "low", "new", "old",
-        "large", "small", "many", "few", "every", "never", "always", "often",
-        "help", "make", "take", "need", "want", "love", "like", "know",
-        "think", "feel", "come", "give", "find", "keep", "let", "put",
-        "seem", "turn", "show", "hear", "play", "run", "move", "live",
-        "believe", "hold", "bring", "happen", "write", "provide", "include",
-        "continue", "set", "learn", "change", "lead", "understand", "watch",
-        "follow", "stop", "create", "speak", "read", "spend", "grow", "open",
-        "walk", "win", "offer", "remember", "love", "consider", "appear",
-        "ensure", "drive", "support", "manage", "review", "maintain",
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB FEED — FETCH + CACHE
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def fetch_and_store_jobs(queries: list, country: str):
+    headers = {
+        "X-RapidAPI-Key":  JSEARCH_API_KEY,
+        "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
     }
-    jd_keywords = list(dict.fromkeys([w for w in jd_words if w not in stopwords and len(w) > 3]))[:80]
-    matched = [kw for kw in jd_keywords if kw in resume_lower]
-    missing = [kw for kw in jd_keywords if kw not in resume_lower]
-    match_pct = round((len(matched) / max(len(jd_keywords), 1)) * 100)
-    top_missing = missing[:12]
-    if match_pct >= 75:
-        verdict = "Strong Match"
-        verdict_color = "green"
-    elif match_pct >= 50:
-        verdict = "Moderate Match"
-        verdict_color = "yellow"
-    else:
-        verdict = "Weak Match"
-        verdict_color = "red"
-    return {
-        "match_pct": match_pct,
-        "matched_keywords": matched[:15],
-        "missing_keywords": top_missing,
-        "total_jd_keywords": len(jd_keywords),
-        "verdict": verdict,
-        "verdict_color": verdict_color,
-        "suggestions": [f"Add '{kw}' to your skills or experience section" for kw in top_missing[:5]]
-    }
+    async with httpx.AsyncClient(timeout=15) as http:
+        for query in queries:
+            try:
+                resp = await http.get(
+                    f"{JSEARCH_BASE}/search",
+                    headers=headers,
+                    params={"query": query, "num_pages": "2", "date_posted": "today"},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                rows = [{
+                    "job_id":          j.get("job_id", ""),
+                    "title":           j.get("job_title", ""),
+                    "company":         j.get("employer_name", ""),
+                    "location":        f"{j.get('job_city','')}, {j.get('job_state','')}".strip(", "),
+                    "description":     (j.get("job_description") or "")[:2000],
+                    "url":             j.get("job_apply_link", ""),
+                    "employment_type": j.get("job_employment_type", ""),
+                    "posted_at":       j.get("job_posted_at_datetime_utc", ""),
+                    "fetched_at":      datetime.now(timezone.utc).isoformat(),
+                    "country":         country,
+                } for j in data]
+                if rows:
+                    supabase.table("jobs").upsert(rows, on_conflict="job_id").execute()
+                    print(f"[Jobs] Upserted {len(rows)} jobs — '{query}' [{country}]")
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"[Jobs] Error on '{query}': {e}")
 
+
+async def refresh_all_jobs():
+    print(f"[Jobs] Refreshing at {datetime.now(timezone.utc)}")
+    await fetch_and_store_jobs(INDIA_QUERIES, "IN")
+    await fetch_and_store_jobs(US_QUERIES,    "US")
+    print("[Jobs] Done.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCHEDULER
+# ─────────────────────────────────────────────────────────────────────────────
+
+scheduler = AsyncIOScheduler()
+
+@app.on_event("startup")
+async def startup_event():
+    scheduler.add_job(refresh_all_jobs, "interval", hours=1, id="job_refresh")
+    scheduler.start()
+    asyncio.create_task(refresh_all_jobs())
+    print("[Startup] Scheduler started.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTES — JOBS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/jobs/")
+async def get_jobs(
+    country:  str            = Query("IN", description="IN or US"),
+    keyword:  Optional[str]  = Query(None),
+    page:     int            = Query(1, ge=1),
+    per_page: int            = Query(20, ge=1, le=50),
+):
+    try:
+        offset = (page - 1) * per_page
+        q = supabase.table("jobs").select("*").eq("country", country.upper())
+        if keyword:
+            q = q.or_(f"title.ilike.%{keyword}%,description.ilike.%{keyword}%")
+        result = q.order("fetched_at", desc=True).range(offset, offset + per_page - 1).execute()
+        return {"jobs": result.data, "page": page, "country": country.upper(), "count": len(result.data)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch jobs: {str(e)}")
+
+
+@app.get("/jobs/search/")
+async def search_jobs(
+    q:       str = Query(...),
+    country: str = Query("IN"),
+    page:    int = Query(1, ge=1),
+):
+    if not JSEARCH_API_KEY:
+        raise HTTPException(status_code=503, detail="Job search API not configured")
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.get(
+                f"{JSEARCH_BASE}/search",
+                headers={"X-RapidAPI-Key": JSEARCH_API_KEY, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
+                params={"query": f"{q} {'India' if country.upper()=='IN' else 'USA'}", "num_pages": str(page)},
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+        jobs = [{
+            "job_id":          j.get("job_id"),
+            "title":           j.get("job_title"),
+            "company":         j.get("employer_name"),
+            "location":        f"{j.get('job_city','')}, {j.get('job_state','')}".strip(", "),
+            "description":     (j.get("job_description") or "")[:500],
+            "url":             j.get("job_apply_link"),
+            "employment_type": j.get("job_employment_type"),
+            "posted_at":       j.get("job_posted_at_datetime_utc"),
+            "country":         country.upper(),
+        } for j in data]
+        return {"jobs": jobs, "query": q, "country": country.upper(), "count": len(jobs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@app.post("/jobs/refresh/")
+async def manual_refresh():
+    asyncio.create_task(refresh_all_jobs())
+    return {"message": "Job refresh triggered"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTES — INTERVIEW PREP
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/generate-interview/", response_model=InterviewResponse)
+async def generate_interview(req: InterviewRequest):
+    if not req.job_description or len(req.job_description.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Job description too short")
+
+    resume_context = f"\nCandidate Resume:\n{req.resume_text[:3000]}" if req.resume_text and req.resume_text.strip() else ""
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert technical recruiter and interview coach. "
+                        "Generate highly specific, realistic interview questions based on the actual job description. "
+                        "Every question must be directly tied to skills or responsibilities in the JD. "
+                        "Return ONLY valid JSON."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Generate {req.num_questions} interview questions for this role.{resume_context}
+
+Job Description:
+{req.job_description[:4000]}
+
+Rules:
+- Questions must be SPECIFIC to this JD, not generic
+- Mix: technical (40%), behavioral (30%), situational (20%), culture fit (10%)
+- If resume is provided, personalize some questions to the candidate's background
+- Match difficulty to seniority level in JD
+
+Return this exact JSON:
+{{
+  "role_summary": "2 sentence summary of what this role requires",
+  "difficulty": "Junior / Mid / Senior / Staff",
+  "questions": [
+    {{
+      "id": 1,
+      "question": "the interview question",
+      "type": "technical | behavioral | situational | culture",
+      "why_asked": "one sentence on what the interviewer is evaluating",
+      "good_answer_hints": ["hint 1", "hint 2", "hint 3"]
+    }}
+  ]
+}}
+"""
+                }
+            ],
+            max_tokens=2500,
+            temperature=0.4,
+        )
+        return json.loads(response.choices[0].message.content.strip())
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Model returned invalid JSON")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Interview generation failed: {str(e)}")
+
+
+@app.post("/evaluate-answer/", response_model=EvaluateResponse)
+async def evaluate_answer(req: EvaluateRequest):
+    if not req.question or len(req.question.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Question too short")
+    if not req.answer or len(req.answer.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Answer too short")
+
+    jd_ctx     = f"\nJob Description:\n{req.job_description[:2000]}" if req.job_description else ""
+    resume_ctx = f"\nCandidate Resume:\n{req.resume_text[:1500]}"    if req.resume_text    else ""
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior technical interviewer and career coach. "
+                        "Evaluate interview answers honestly and constructively. "
+                        "Be specific — reference what was good and what was missing. "
+                        "Return ONLY valid JSON."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Evaluate this interview answer.{jd_ctx}{resume_ctx}
+
+Question: {req.question}
+Candidate's Answer: {req.answer}
+
+Evaluate on:
+1. Relevance — did they actually answer it?
+2. Specific examples / STAR method
+3. Technical accuracy (if technical)
+4. Keywords and terminology from the JD
+5. Clarity and conciseness
+
+Return this exact JSON:
+{{
+  "score": <integer 0-100>,
+  "feedback": "3-4 sentences of honest specific feedback referencing their actual answer",
+  "improved_answer": "a rewritten version that would score 90+, in first person, natural tone",
+  "keywords_used": ["keywords from JD they used well"],
+  "keywords_missing": ["important keywords/concepts they should have mentioned"]
+}}
+"""
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.3,
+        )
+        return json.loads(response.choices[0].message.content.strip())
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Model returned invalid JSON")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTES — RESUME ANALYSIS
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/analyze-resume/", response_model=ResumeAnalysis)
 async def analyze_resume(
-    file: UploadFile = File(...),
+    file:            UploadFile     = File(...),
     job_description: Optional[str] = Form(default="")
 ):
     if file.content_type != "application/pdf":
@@ -359,26 +724,24 @@ async def analyze_resume(
             "strengths": [],
             "weaknesses": ["Missing essential resume sections or professional formatting."],
             "missing_skills": [],
-            "ats_score": 0,
-            "ats_breakdown": {},
+            "ats_score": 0, "ats_breakdown": {},
             "recommendations": ["Upload a structured resume including Experience, Education, Skills, and contact information."],
-            "weak_bullets": [],
-            "jd_match": None
+            "weak_bullets": [], "jd_match": None,
         }
 
-    ats_score, ats_breakdown = calculate_ats_score(text)
+    ats_score, ats_breakdown = calculate_ats_score(text, job_description)
     weak_bullets = extract_weak_bullets(text)
-    jd_match = analyze_jd_match(text, job_description) if job_description and job_description.strip() else None
+    jd_match     = analyze_jd_match(text, job_description) if job_description and job_description.strip() else None
 
-    quant_info = ats_breakdown["quantification"]
-    verb_info  = ats_breakdown["action_verbs"]
-    kw_info    = ats_breakdown["keywords"]
+    qi = ats_breakdown["quantification"]
+    vi = ats_breakdown["action_verbs"]
+    ki = ats_breakdown["keywords"]
 
     scoring_context = f"""
 ATS Score: {ats_score}/100
-Quantification: {quant_info['metric_density_pct']}% of bullet lines contain numbers/metrics ({quant_info['points']}/{quant_info['max']} pts)
-Action Verbs: {verb_info['strong_verb_lines']} strong, {verb_info['weak_phrase_lines']} weak phrase lines ({verb_info['points']}/{verb_info['max']} pts)
-Keywords: {kw_info['total_keywords_found']} total across {kw_info['domains_covered']} domains ({kw_info['points']}/{kw_info['max']} pts)
+Quantification: {qi['metric_density_pct']}% of bullet lines contain metrics ({qi['points']}/{qi['max']} pts)
+Action Verbs: {vi['strong_verb_lines']} strong, {vi['weak_phrase_lines']} weak ({vi['points']}/{vi['max']} pts)
+Keywords: {ki['total_keywords_found']} total across {ki['domains_covered']} domains ({ki['points']}/{ki['max']} pts)
 """
     jd_context = (
         f"\nJob Description Match: {jd_match['match_pct']}% — missing: {', '.join(jd_match['missing_keywords'][:8])}"
@@ -386,17 +749,12 @@ Keywords: {kw_info['total_keywords_found']} total across {kw_info['domains_cover
     )
 
     try:
-        response = client.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a professional resume coach and ATS specialist. Return ONLY valid JSON. Be specific and actionable."
-                },
-                {
-                    "role": "user",
-                    "content": f"""
+                {"role": "system", "content": "You are a professional resume coach and ATS specialist. Return ONLY valid JSON. Be specific and actionable."},
+                {"role": "user", "content": f"""
 Evaluate this resume. Use the scoring data for targeted feedback.
 
 {scoring_context}{jd_context}
@@ -412,26 +770,27 @@ Return this exact JSON:
   "missing_skills": ["skills/keywords missing that are common in this field"],
   "recommendations": ["5 specific actionable improvements ordered by impact"]
 }}
-"""
-                }
+"""}
             ],
             max_tokens=1200,
             temperature=0.3,
         )
-
-        structured_output = json.loads(response.choices[0].message.content.strip())
-        structured_output["ats_score"]     = ats_score
-        structured_output["ats_breakdown"] = ats_breakdown
-        structured_output["weak_bullets"]  = weak_bullets
-        structured_output["jd_match"]      = jd_match
-
+        out = json.loads(response.choices[0].message.content.strip())
+        out["ats_score"]     = ats_score
+        out["ats_breakdown"] = ats_breakdown
+        out["weak_bullets"]  = weak_bullets
+        out["jd_match"]      = jd_match
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Model returned invalid JSON")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error communicating with OpenAI: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"OpenAI error: {str(e)}")
 
-    return structured_output
+    return out
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTES — BULLET REWRITER
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/rewrite-bullet/", response_model=RewriteResponse)
 async def rewrite_bullet(req: RewriteRequest):
@@ -441,24 +800,19 @@ async def rewrite_bullet(req: RewriteRequest):
     job_hint = f"\nJob context: {req.job_context}" if req.job_context else ""
 
     try:
-        response = client.chat.completions.create(
+        response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             response_format={"type": "json_object"},
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert resume writer. Rewrite weak bullet points to be powerful, metric-driven, and ATS-optimized. Return only JSON."
-                },
-                {
-                    "role": "user",
-                    "content": f"""
+                {"role": "system", "content": "You are an expert resume writer. Rewrite weak bullet points to be powerful, metric-driven, and ATS-optimized. Return only JSON."},
+                {"role": "user", "content": f"""
 Rewrite this weak resume bullet point to be much stronger.{job_hint}
 
 Original: "{req.bullet}"
 
 Rules:
 - Start with a strong action verb (Led, Built, Engineered, Optimized, Delivered, etc.)
-- Add a specific metric or quantifiable result (even a suggested placeholder like [X%] is fine)
+- Add a specific metric or quantifiable result (placeholder like [X%] is fine)
 - Include 1-2 relevant ATS keywords naturally
 - Keep it under 20 words
 - Sound natural, not robotic
@@ -468,8 +822,7 @@ Return JSON:
   "rewritten": "the improved bullet point",
   "explanation": "one sentence explaining what was improved and why"
 }}
-"""
-                }
+"""}
             ],
             max_tokens=300,
             temperature=0.5,
@@ -477,3 +830,25 @@ Return JSON:
         return json.loads(response.choices[0].message.content.strip())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rewrite failed: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HEALTH CHECK
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    return {
+        "status":    "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoints": [
+            "POST /analyze-resume/",
+            "POST /rewrite-bullet/",
+            "POST /generate-interview/",
+            "POST /evaluate-answer/",
+            "GET  /jobs/?country=IN|US&keyword=&page=",
+            "GET  /jobs/search/?q=&country=IN|US",
+            "POST /jobs/refresh/",
+            "GET  /health",
+        ]
+    }

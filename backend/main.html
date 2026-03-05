@@ -1,0 +1,871 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2575.7">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Times; -webkit-text-stroke: #000000}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Times; -webkit-text-stroke: #000000; min-height: 14.0px}
+    span.s1 {font-kerning: none}
+  </style>
+</head>
+<body>
+<p class="p1"><span class="s1">from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Query</span></p>
+<p class="p1"><span class="s1">from pydantic import BaseModel</span></p>
+<p class="p1"><span class="s1">from typing import List, Optional</span></p>
+<p class="p1"><span class="s1">from PyPDF2 import PdfReader</span></p>
+<p class="p1"><span class="s1">from openai import OpenAI</span></p>
+<p class="p1"><span class="s1">from dotenv import load_dotenv</span></p>
+<p class="p1"><span class="s1">import io</span></p>
+<p class="p1"><span class="s1">import json</span></p>
+<p class="p1"><span class="s1">import os</span></p>
+<p class="p1"><span class="s1">import httpx</span></p>
+<p class="p1"><span class="s1">import asyncio</span></p>
+<p class="p1"><span class="s1">from fastapi.middleware.cors import CORSMiddleware</span></p>
+<p class="p1"><span class="s1">from supabase import create_client, Client</span></p>
+<p class="p1"><span class="s1">from apscheduler.schedulers.asyncio import AsyncIOScheduler</span></p>
+<p class="p1"><span class="s1">from datetime import datetime, timezone</span></p>
+<p class="p1"><span class="s1">import re</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">load_dotenv()</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">app = FastAPI()</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">app.add_middleware(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>CORSMiddleware,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>allow_origins=[</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"http://localhost:5173",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"http://127.0.0.1:5173",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"https://landtherole-ai.vercel.app"</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>allow_credentials=True,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>allow_methods=["*"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>allow_headers=["*"],</span></p>
+<p class="p1"><span class="s1">)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># CLIENTS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">supabase: Client = create_client(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>os.getenv("SUPABASE_URL"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>os.getenv("SUPABASE_KEY")</span></p>
+<p class="p1"><span class="s1">)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">JSEARCH_API_KEY = os.getenv("JSEARCH_API_KEY")</span></p>
+<p class="p1"><span class="s1">JSEARCH_BASE<span class="Apple-converted-space">    </span>= "https://jsearch.p.rapidapi.com"</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># MODELS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class ResumeAnalysis(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>summary_feedback: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>strengths: List[str]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>weaknesses: List[str]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>missing_skills: List[str]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>ats_score: int</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>ats_breakdown: dict</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>recommendations: List[str]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>weak_bullets: List[str]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>jd_match: Optional[dict] = None</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class RewriteRequest(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>bullet: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>job_context: Optional[str] = ""</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class RewriteResponse(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>rewritten: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>explanation: str</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class InterviewRequest(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>resume_text: Optional[str] = ""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>job_description: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>num_questions: Optional[int] = 10</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class InterviewResponse(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>questions: List[dict]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>role_summary: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>difficulty: str</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class EvaluateRequest(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>question: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>answer: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>job_description: Optional[str] = ""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>resume_text: Optional[str] = ""</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">class EvaluateResponse(BaseModel):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>score: int</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>feedback: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>improved_answer: str</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>keywords_used: List[str]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>keywords_missing: List[str]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># CONSTANTS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">SECTION_WEIGHTS = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"experience": <span class="Apple-converted-space">    </span>{"aliases": ["experience", "work experience", "employment history", "professional experience"], "weight": 20},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"education":<span class="Apple-converted-space">      </span>{"aliases": ["education", "academic background", "qualifications"], "weight": 12},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"skills": <span class="Apple-converted-space">        </span>{"aliases": ["skills", "technical skills", "core competencies", "expertise"], "weight": 12},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"summary":<span class="Apple-converted-space">        </span>{"aliases": ["summary", "profile", "objective", "about me", "professional summary"], "weight": 8},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"projects": <span class="Apple-converted-space">      </span>{"aliases": ["projects", "personal projects", "key projects"], "weight": 6},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"certifications": {"aliases": ["certifications", "certificates", "licenses"], "weight": 5},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"achievements": <span class="Apple-converted-space">  </span>{"aliases": ["achievements", "awards", "honors", "accomplishments"], "weight": 4},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"contact":<span class="Apple-converted-space">        </span>{"aliases": ["phone", "email", "linkedin", "github", "portfolio"], "weight": 3},</span></p>
+<p class="p1"><span class="s1">}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">KEYWORD_GROUPS = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"languages":<span class="Apple-converted-space">    </span>["python", "java", "javascript", "typescript", "c++", "c#", "ruby", "go", "rust", "kotlin", "swift", "php", "scala", "r", "matlab", "bash", "shell"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"web_frontend": ["react", "angular", "vue", "nextjs", "svelte", "html", "css", "tailwind", "webpack", "redux", "graphql", "rest api", "restful"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"web_backend":<span class="Apple-converted-space">  </span>["node.js", "django", "flask", "fastapi", "spring", "express", "rails", "laravel", "microservices", "api", "backend"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"databases":<span class="Apple-converted-space">    </span>["sql", "mysql", "postgresql", "mongodb", "redis", "elasticsearch", "dynamodb", "sqlite", "oracle", "nosql", "database"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"cloud_devops": ["aws", "azure", "gcp", "google cloud", "docker", "kubernetes", "terraform", "ci/cd", "jenkins", "github actions", "linux", "ansible", "devops"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"data_ml":<span class="Apple-converted-space">      </span>["machine learning", "deep learning", "nlp", "data science", "tensorflow", "pytorch", "scikit-learn", "pandas", "numpy", "data analysis", "statistics", "tableau", "power bi", "spark", "etl"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"soft_tools": <span class="Apple-converted-space">  </span>["agile", "scrum", "jira", "git", "github", "gitlab", "figma", "confluence", "leadership", "communication", "collaboration"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"security": <span class="Apple-converted-space">    </span>["cybersecurity", "unit testing", "jest", "pytest", "selenium", "qa", "test automation", "oauth", "ssl"],</span></p>
+<p class="p1"><span class="s1">}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">STRONG_ACTION_VERBS = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"developed", "designed", "built", "led", "architected", "engineered", "launched",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"delivered", "implemented", "created", "spearheaded", "managed", "optimized",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"reduced", "increased", "improved", "automated", "scaled", "deployed", "drove",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"established", "oversaw", "coordinated", "mentored", "trained", "analyzed",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"streamlined", "migrated", "integrated", "transformed"</span></p>
+<p class="p1"><span class="s1">]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">WEAK_ACTION_PHRASES = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"worked on", "helped with", "responsible for", "assisted with",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"was involved in", "participated in", "contributed to", "handled",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"dealt with", "tried to"</span></p>
+<p class="p1"><span class="s1">]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">TECH_PHRASES = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"machine learning", "deep learning", "natural language processing",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"computer vision", "reinforcement learning", "large language models",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"generative ai", "prompt engineering", "object oriented", "functional programming",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"test driven development", "react.js", "next.js", "vue.js", "node.js",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"react native", "single page application", "responsive design",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"rest api", "restful api", "graphql api", "microservices architecture",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"event driven", "message queue", "api gateway", "load balancing",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"continuous integration", "continuous deployment", "ci/cd",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"github actions", "amazon web services", "google cloud platform",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"infrastructure as code", "container orchestration", "serverless architecture",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"data pipeline", "etl pipeline", "data warehouse", "data lake",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"real time processing", "feature engineering", "a/b testing",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"statistical analysis", "business intelligence", "data visualization",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"relational database", "nosql database", "vector database",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"full stack", "full-stack", "cross functional", "agile methodology",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"system design", "distributed systems", "high availability",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"technical lead", "code review", "software architecture",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"penetration testing", "zero trust", "oauth 2.0",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"problem solving", "stakeholder management",</span></p>
+<p class="p1"><span class="s1">]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">NORMALIZATION_MAP = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"react.js": <span class="Apple-converted-space">  </span>["reactjs"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"node.js":<span class="Apple-converted-space">    </span>["nodejs"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"next.js":<span class="Apple-converted-space">    </span>["nextjs"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"vue.js": <span class="Apple-converted-space">    </span>["vuejs"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"ci/cd":<span class="Apple-converted-space">      </span>["cicd", "ci cd"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"c++":<span class="Apple-converted-space">        </span>["cpp"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"c#": <span class="Apple-converted-space">        </span>["csharp"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"aws":<span class="Apple-converted-space">        </span>["amazon web services"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"gcp":<span class="Apple-converted-space">        </span>["google cloud platform", "google cloud"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"k8s":<span class="Apple-converted-space">        </span>["kubernetes"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"ml": <span class="Apple-converted-space">        </span>["machine learning"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"nlp":<span class="Apple-converted-space">        </span>["natural language processing"],</span></p>
+<p class="p1"><span class="s1">}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">STOPWORDS = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"the","and","for","are","you","with","that","this","will","have","from",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"they","been","their","your","our","all","can","not","but","about","work",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"role","team","join","must","able","well","also","each","into","more",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"some","such","than","then","there","these","those","what","when","which",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"who","why","how","level","location","united","states","remote","hybrid",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"onsite","office","fulltime","parttime","contract","permanent",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"responsibilities","maintain","modern","consume","functional","including",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"position","looking","salary","benefits","equal","opportunity","employer",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"apply","candidate","candidates","qualified","minimum","preferred","required",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"plus","bonus","strong","excellent","ability","skills","knowledge",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"understanding","familiar","familiarity","proficiency","proficient",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"comfortable","passionate","motivated","driven","detail","oriented","fast",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"paced","company","organization","business","product","products","service",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"services","customer","client","clients","users","startup","environment",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"across","within","without","between","through","during","before","after",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"above","below","other","using","based","years","experience","year","month",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"week","time","day","francisco","angeles","york","chicago","austin","seattle",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"boston","denver","atlanta","dallas","london","toronto","ideal","enjoy",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"working","write","clean","seeking","contribute","full","used","daily",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"collaborating","development","interfaces","responsive","environments",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"stack","engineering","applications","deployment","scalable","great",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"good","best","high","low","new","old","large","small","many","few",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"help","make","take","need","want","know","think","come","give","find",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"provide","include","continue","set","learn","change","lead","understand",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"ensure","drive","support","manage","review",</span></p>
+<p class="p1"><span class="s1">}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">INDIA_QUERIES = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"software engineer India",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"data scientist India",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"product manager India",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"frontend developer India",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"backend developer India",</span></p>
+<p class="p1"><span class="s1">]</span></p>
+<p class="p1"><span class="s1">US_QUERIES = [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"software engineer USA",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"data scientist USA",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"product manager USA",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"frontend developer USA",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>"machine learning engineer USA",</span></p>
+<p class="p1"><span class="s1">]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># HELPERS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def extract_text_from_pdf(contents: bytes) -&gt; str:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>pdf<span class="Apple-converted-space">  </span>= PdfReader(io.BytesIO(contents))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>text = ""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>for page in pdf.pages:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>extracted = page.extract_text()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if extracted:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>text += extracted + "\n"</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return text</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def is_valid_resume(text: str) -&gt; bool:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>text_lower<span class="Apple-converted-space">  </span>= text.lower()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>signals <span class="Apple-converted-space">    </span>= ["experience", "work experience", "education", "skills", "projects",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                   </span>"summary", "objective", "employment", "career", "qualifications"]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>signal_hits = sum(1 for s in signals if s in text_lower)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>has_email <span class="Apple-converted-space">  </span>= bool(re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>has_dates <span class="Apple-converted-space">  </span>= bool(re.search(r"(19|20)\d{2}", text))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return len(text.split()) &gt;= 200 and signal_hits &gt;= 2 and has_email and has_dates</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def normalize_text(text: str) -&gt; str:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>t = text.lower()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>for canonical, variants in NORMALIZATION_MAP.items():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>for v in variants:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>t = t.replace(v, canonical)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>t = re.sub(r'[^\w\s#+./]', ' ', t)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>t = re.sub(r'\s+', ' ', t)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return t</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># ATS SCORERS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def score_sections(text_lower):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>breakdown, total = {}, 0</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>for section, cfg in SECTION_WEIGHTS.items():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>found = any(alias in text_lower for alias in cfg["aliases"])</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>pts <span class="Apple-converted-space">  </span>= cfg["weight"] if found else 0</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>total += pts</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>breakdown[section] = {"found": found, "points": pts, "max": cfg["weight"]}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return total, breakdown</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def score_quantification(text):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>lines<span class="Apple-converted-space">        </span>= re.split(r'\n', text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>bullet_lines = [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in lines if len(l.strip()) &gt; 20]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not bullet_lines:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return 0, {"metric_density": 0, "points": 0, "max": 30}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>pattern = re.compile(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>r'(\d+[\.,]?\d*\s*(%|percent|x|times|k|m|bn|million|billion|thousand)?|\$[\d,]+|increased|decreased|reduced|improved|grew|saved|generated)\b',</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>re.IGNORECASE</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>hits<span class="Apple-converted-space">    </span>= sum(1 for l in bullet_lines if pattern.search(l))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>density = hits / len(bullet_lines)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if density &gt;= 0.60: <span class="Apple-converted-space">  </span>pts = 30</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif density &gt;= 0.45: pts = 24</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif density &gt;= 0.30: pts = 18</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif density &gt;= 0.15: pts = 10</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif density &gt;= 0.05: pts = 5</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>else: <span class="Apple-converted-space">                </span>pts = 0</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return pts, {"bullet_lines_found": len(bullet_lines), "lines_with_metrics": hits,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                 </span>"metric_density_pct": round(density * 100, 1), "points": pts, "max": 30}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def score_action_verbs(text):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>lines<span class="Apple-converted-space">  </span>= [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in text.split("\n") if len(l.strip()) &gt; 20]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>strong = sum(1 for l in lines if any(l.lower().startswith(v) for v in STRONG_ACTION_VERBS))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>weak <span class="Apple-converted-space">  </span>= sum(1 for l in lines if any(l.lower().startswith(p) for p in WEAK_ACTION_PHRASES))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>ratio<span class="Apple-converted-space">  </span>= strong / max(len(lines), 1)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if ratio &gt;= 0.60: <span class="Apple-converted-space">  </span>pts = 20</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif ratio &gt;= 0.40: pts = 15</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif ratio &gt;= 0.20: pts = 10</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif ratio &gt;= 0.05: pts = 5</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>else: <span class="Apple-converted-space">              </span>pts = 2</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>penalty = min(weak * 3, 10)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>pts <span class="Apple-converted-space">    </span>= max(0, pts - penalty)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return pts, {"strong_verb_lines": strong, "weak_phrase_lines": weak,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                 </span>"strong_ratio_pct": round(ratio * 100, 1), "penalty_applied": penalty,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                 </span>"points": pts, "max": 20}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def score_keyword_relevance(text_lower):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>domain_hits <span class="Apple-converted-space">    </span>= {d: [kw for kw in kws if kw in text_lower] for d, kws in KEYWORD_GROUPS.items()}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>domains_covered = sum(1 for h in domain_hits.values() if h)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>total_kw<span class="Apple-converted-space">        </span>= sum(len(h) for h in domain_hits.values())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>breadth = min(domains_covered * 2, 15)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if total_kw &gt;= 20: <span class="Apple-converted-space">  </span>depth = 15</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif total_kw &gt;= 12: depth = 11</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif total_kw &gt;= 7:<span class="Apple-converted-space">  </span>depth = 7</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif total_kw &gt;= 3:<span class="Apple-converted-space">  </span>depth = 4</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>else:<span class="Apple-converted-space">                </span>depth = 1</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>pts = breadth + depth</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return pts, {"domains_covered": domains_covered, "total_keywords_found": total_kw,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                 </span>"per_domain": {d: len(h) for d, h in domain_hits.items()},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                 </span>"breadth_points": breadth, "depth_points": depth, "points": pts, "max": 30}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def score_length_and_format(text):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>wc = len(text.split())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if 350 &lt;= wc &lt;= 800: <span class="Apple-converted-space">  </span>lp = 10</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif 250 &lt;= wc &lt; 350:<span class="Apple-converted-space">  </span>lp = 7</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif 800 &lt; wc &lt;= 1100: lp = 8</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif wc &gt; 1100:<span class="Apple-converted-space">        </span>lp = 4</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>else:<span class="Apple-converted-space">                  </span>lp = 3</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>bc = len(re.findall(r'^\s*[-•▪▸►◦●✓✔*]', text, re.MULTILINE))</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>fp = min(bc // 3, 5)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return lp + fp, {"word_count": wc, "bullet_count": bc, "length_points": lp,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                     </span>"format_points": fp, "points": lp + fp, "max": 15}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def score_contact_info(text):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>checks = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"email":<span class="Apple-converted-space">    </span>bool(re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"phone":<span class="Apple-converted-space">    </span>bool(re.search(r"\+?\d[\d\s\-().]{7,}\d", text)),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"linkedin": bool(re.search(r"linkedin", text, re.IGNORECASE)),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"github": <span class="Apple-converted-space">  </span>bool(re.search(r"github", <span class="Apple-converted-space">  </span>text, re.IGNORECASE)),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"location": bool(re.search(r"\b[A-Z][a-z]+,\s*[A-Z]{2}\b|\bremote\b", text)),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>pts = sum([3, 2, 2, 2, 1][i] for i, v in enumerate(checks.values()) if v)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return min(pts, 10), {"checks": checks, "points": min(pts, 10), "max": 10}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># JD MATCHING</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def analyze_jd_match(resume_text: str, jd_text: str) -&gt; dict:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>rn = normalize_text(resume_text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>jn = normalize_text(jd_text)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>found_phrases <span class="Apple-converted-space">  </span>= [p for p in TECH_PHRASES if p in jn]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>matched_phrases = [p for p in found_phrases if p in rn]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>missing_phrases = [p for p in found_phrases if p not in rn]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>phrase_words<span class="Apple-converted-space">    </span>= set(w for p in found_phrases for w in p.split())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>jd_words<span class="Apple-converted-space">        </span>= re.findall(r'\b[a-z][a-z+#.]{2,}\b', jn)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>singles <span class="Apple-converted-space">        </span>= list(dict.fromkeys([</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>w for w in jd_words</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if w not in STOPWORDS and len(w) &gt; 3 and w not in phrase_words</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>]))[:60]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>matched_singles = [k for k in singles if k in rn]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>missing_singles = [k for k in singles if k not in rn]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>wm<span class="Apple-converted-space">    </span>= (len(matched_phrases) * 2) + len(matched_singles)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>wt<span class="Apple-converted-space">    </span>= (len(found_phrases) <span class="Apple-converted-space">  </span>* 2) + len(singles)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>match = min(round((wm / max(wt, 1)) * 100), 98)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if match &gt;= 75: <span class="Apple-converted-space">  </span>verdict, color = "Strong Match", <span class="Apple-converted-space">  </span>"green"</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>elif match &gt;= 50: verdict, color = "Moderate Match", "yellow"</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>else: <span class="Apple-converted-space">            </span>verdict, color = "Weak Match", <span class="Apple-converted-space">    </span>"red"</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>top_missing = missing_phrases[:6] + missing_singles[:6]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>suggestions = (</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>[f"Add '{i}' — key multi-word skill from this JD missing in your resume" for i in missing_phrases[:3]] +</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>[f"Include '{i}' in your skills or experience section" for i in missing_singles[:4]]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"match_pct": <span class="Apple-converted-space">        </span>match,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"matched_keywords":<span class="Apple-converted-space">  </span>matched_phrases[:5] + matched_singles[:10],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"missing_keywords":<span class="Apple-converted-space">  </span>top_missing,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"matched_phrases": <span class="Apple-converted-space">  </span>matched_phrases,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"missing_phrases": <span class="Apple-converted-space">  </span>missing_phrases[:6],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"total_jd_keywords": len(found_phrases) + len(singles),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"verdict": <span class="Apple-converted-space">          </span>verdict,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"verdict_color": <span class="Apple-converted-space">    </span>color,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"suggestions": <span class="Apple-converted-space">      </span>suggestions[:7],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># ATS MASTER SCORER</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def calculate_ats_score(text: str, jd_text: Optional[str] = None):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>tl = text.lower()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>sr, sd = score_sections(tl)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>qp, qd = score_quantification(text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>vp, vd = score_action_verbs(text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>kp, kd = score_keyword_relevance(tl)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>lp, ld = score_length_and_format(text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>cp, cd = score_contact_info(text)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>sp <span class="Apple-converted-space">    </span>= round((sr / sum(c["weight"] for c in SECTION_WEIGHTS.values())) * 30)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>raw<span class="Apple-converted-space">    </span>= sp + qp + vp + kp + lp + cp</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>scaled = round((raw / 135) * 100)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>penalty, boost = 0, 0</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if jd_text and jd_text.strip():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>jd = analyze_jd_match(text, jd_text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>mp = jd["match_pct"]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if mp &lt; 40:<span class="Apple-converted-space">    </span>penalty = 12</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>elif mp &lt; 55:<span class="Apple-converted-space">  </span>penalty = 6</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>elif mp &gt;= 75: boost <span class="Apple-converted-space">  </span>= 5</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>final = min(max(scaled - penalty + boost, 1), 97)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return final, {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"sections": <span class="Apple-converted-space">      </span>{**sd, "normalised_points": sp, "max": 30},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"quantification": qd,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"action_verbs": <span class="Apple-converted-space">  </span>vd,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"keywords": <span class="Apple-converted-space">      </span>kd,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"length_format":<span class="Apple-converted-space">  </span>ld,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"contact_info": <span class="Apple-converted-space">  </span>cd,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"raw_total":<span class="Apple-converted-space">      </span>raw,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"max_possible": <span class="Apple-converted-space">  </span>135,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"jd_penalty": <span class="Apple-converted-space">    </span>penalty,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"jd_boost": <span class="Apple-converted-space">      </span>boost,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"final_score":<span class="Apple-converted-space">    </span>final,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">def extract_weak_bullets(text):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>lines = [l.strip().lstrip("-•▪▸►◦●✓✔* ").strip() for l in text.split("\n") if len(l.strip()) &gt; 20]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return [l for l in lines if any(l.lower().startswith(p) for p in WEAK_ACTION_PHRASES)][:6]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># JOB FEED — FETCH + CACHE</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">async def fetch_and_store_jobs(queries: list, country: str):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>headers = {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"X-RapidAPI-Key":<span class="Apple-converted-space">  </span>JSEARCH_API_KEY,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"X-RapidAPI-Host": "jsearch.p.rapidapi.com",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>async with httpx.AsyncClient(timeout=15) as http:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>for query in queries:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>resp = await http.get(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>f"{JSEARCH_BASE}/search",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>headers=headers,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>params={"query": query, "num_pages": "2", "date_posted": "today"},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>resp.raise_for_status()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>data = resp.json().get("data", [])</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>rows = [{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"job_id":<span class="Apple-converted-space">          </span>j.get("job_id", ""),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"title": <span class="Apple-converted-space">          </span>j.get("job_title", ""),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"company": <span class="Apple-converted-space">        </span>j.get("employer_name", ""),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"location":<span class="Apple-converted-space">        </span>f"{j.get('job_city','')}, {j.get('job_state','')}".strip(", "),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"description": <span class="Apple-converted-space">    </span>(j.get("job_description") or "")[:2000],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"url": <span class="Apple-converted-space">            </span>j.get("job_apply_link", ""),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"employment_type": j.get("job_employment_type", ""),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"posted_at": <span class="Apple-converted-space">      </span>j.get("job_posted_at_datetime_utc", ""),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"fetched_at":<span class="Apple-converted-space">      </span>datetime.now(timezone.utc).isoformat(),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"country": <span class="Apple-converted-space">        </span>country,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>} for j in data]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>if rows:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>supabase.table("jobs").upsert(rows, on_conflict="job_id").execute()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>print(f"[Jobs] Upserted {len(rows)} jobs — '{query}' [{country}]")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>await asyncio.sleep(1)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>print(f"[Jobs] Error on '{query}': {e}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">async def refresh_all_jobs():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>print(f"[Jobs] Refreshing at {datetime.now(timezone.utc)}")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>await fetch_and_store_jobs(INDIA_QUERIES, "IN")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>await fetch_and_store_jobs(US_QUERIES,<span class="Apple-converted-space">    </span>"US")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>print("[Jobs] Done.")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># SCHEDULER</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">scheduler = AsyncIOScheduler()</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.on_event("startup")</span></p>
+<p class="p1"><span class="s1">async def startup_event():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>scheduler.add_job(refresh_all_jobs, "interval", hours=1, id="job_refresh")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>scheduler.start()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>asyncio.create_task(refresh_all_jobs())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>print("[Startup] Scheduler started.")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.on_event("shutdown")</span></p>
+<p class="p1"><span class="s1">async def shutdown_event():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>scheduler.shutdown()</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># ROUTES — JOBS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.get("/jobs/")</span></p>
+<p class="p1"><span class="s1">async def get_jobs(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>country:<span class="Apple-converted-space">  </span>str<span class="Apple-converted-space">            </span>= Query("IN", description="IN or US"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>keyword:<span class="Apple-converted-space">  </span>Optional[str]<span class="Apple-converted-space">  </span>= Query(None),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>page: <span class="Apple-converted-space">    </span>int<span class="Apple-converted-space">            </span>= Query(1, ge=1),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>per_page: int<span class="Apple-converted-space">            </span>= Query(20, ge=1, le=50),</span></p>
+<p class="p1"><span class="s1">):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>offset = (page - 1) * per_page</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>q = supabase.table("jobs").select("*").eq("country", country.upper())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if keyword:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>q = q.or_(f"title.ilike.%{keyword}%,description.ilike.%{keyword}%")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>result = q.order("fetched_at", desc=True).range(offset, offset + per_page - 1).execute()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return {"jobs": result.data, "page": page, "country": country.upper(), "count": len(result.data)}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail=f"Failed to fetch jobs: {str(e)}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.get("/jobs/search/")</span></p>
+<p class="p1"><span class="s1">async def search_jobs(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>q: <span class="Apple-converted-space">      </span>str = Query(...),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>country: str = Query("IN"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>page:<span class="Apple-converted-space">    </span>int = Query(1, ge=1),</span></p>
+<p class="p1"><span class="s1">):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not JSEARCH_API_KEY:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=503, detail="Job search API not configured")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>async with httpx.AsyncClient(timeout=15) as http:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>resp = await http.get(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>f"{JSEARCH_BASE}/search",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>headers={"X-RapidAPI-Key": JSEARCH_API_KEY, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>params={"query": f"{q} {'India' if country.upper()=='IN' else 'USA'}", "num_pages": str(page)},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>resp.raise_for_status()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>data = resp.json().get("data", [])</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>jobs = [{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"job_id":<span class="Apple-converted-space">          </span>j.get("job_id"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"title": <span class="Apple-converted-space">          </span>j.get("job_title"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"company": <span class="Apple-converted-space">        </span>j.get("employer_name"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"location":<span class="Apple-converted-space">        </span>f"{j.get('job_city','')}, {j.get('job_state','')}".strip(", "),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"description": <span class="Apple-converted-space">    </span>(j.get("job_description") or "")[:500],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"url": <span class="Apple-converted-space">            </span>j.get("job_apply_link"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"employment_type": j.get("job_employment_type"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"posted_at": <span class="Apple-converted-space">      </span>j.get("job_posted_at_datetime_utc"),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"country": <span class="Apple-converted-space">        </span>country.upper(),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>} for j in data]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return {"jobs": jobs, "query": q, "country": country.upper(), "count": len(jobs)}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.post("/jobs/refresh/")</span></p>
+<p class="p1"><span class="s1">async def manual_refresh():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>asyncio.create_task(refresh_all_jobs())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return {"message": "Job refresh triggered"}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># ROUTES — INTERVIEW PREP</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.post("/generate-interview/", response_model=InterviewResponse)</span></p>
+<p class="p1"><span class="s1">async def generate_interview(req: InterviewRequest):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not req.job_description or len(req.job_description.strip()) &lt; 50:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=400, detail="Job description too short")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>resume_context = f"\nCandidate Resume:\n{req.resume_text[:3000]}" if req.resume_text and req.resume_text.strip() else ""</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>response = openai_client.chat.completions.create(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>model="gpt-4o-mini",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>response_format={"type": "json_object"},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>messages=[</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"role": "system",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"content": (</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"You are an expert technical recruiter and interview coach. "</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"Generate highly specific, realistic interview questions based on the actual job description. "</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"Every question must be directly tied to skills or responsibilities in the JD. "</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"Return ONLY valid JSON."</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"role": "user",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"content": f"""</span></p>
+<p class="p1"><span class="s1">Generate {req.num_questions} interview questions for this role.{resume_context}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Job Description:</span></p>
+<p class="p1"><span class="s1">{req.job_description[:4000]}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Rules:</span></p>
+<p class="p1"><span class="s1">- Questions must be SPECIFIC to this JD, not generic</span></p>
+<p class="p1"><span class="s1">- Mix: technical (40%), behavioral (30%), situational (20%), culture fit (10%)</span></p>
+<p class="p1"><span class="s1">- If resume is provided, personalize some questions to the candidate's background</span></p>
+<p class="p1"><span class="s1">- Match difficulty to seniority level in JD</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Return this exact JSON:</span></p>
+<p class="p1"><span class="s1">{{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"role_summary": "2 sentence summary of what this role requires",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"difficulty": "Junior / Mid / Senior / Staff",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"questions": [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>{{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>"id": 1,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>"question": "the interview question",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>"type": "technical | behavioral | situational | culture",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>"why_asked": "one sentence on what the interviewer is evaluating",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">      </span>"good_answer_hints": ["hint 1", "hint 2", "hint 3"]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>]</span></p>
+<p class="p1"><span class="s1">}}</span></p>
+<p class="p1"><span class="s1">"""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>max_tokens=2500,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>temperature=0.4,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return json.loads(response.choices[0].message.content.strip())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except json.JSONDecodeError:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail="Model returned invalid JSON")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail=f"Interview generation failed: {str(e)}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.post("/evaluate-answer/", response_model=EvaluateResponse)</span></p>
+<p class="p1"><span class="s1">async def evaluate_answer(req: EvaluateRequest):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not req.question or len(req.question.strip()) &lt; 5:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=400, detail="Question too short")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not req.answer or len(req.answer.strip()) &lt; 10:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=400, detail="Answer too short")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>jd_ctx <span class="Apple-converted-space">    </span>= f"\nJob Description:\n{req.job_description[:2000]}" if req.job_description else ""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>resume_ctx = f"\nCandidate Resume:\n{req.resume_text[:1500]}"<span class="Apple-converted-space">    </span>if req.resume_text<span class="Apple-converted-space">    </span>else ""</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>response = openai_client.chat.completions.create(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>model="gpt-4o-mini",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>response_format={"type": "json_object"},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>messages=[</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"role": "system",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"content": (</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"You are a senior technical interviewer and career coach. "</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"Evaluate interview answers honestly and constructively. "</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"Be specific — reference what was good and what was missing. "</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                        </span>"Return ONLY valid JSON."</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"role": "user",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                    </span>"content": f"""</span></p>
+<p class="p1"><span class="s1">Evaluate this interview answer.{jd_ctx}{resume_ctx}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Question: {req.question}</span></p>
+<p class="p1"><span class="s1">Candidate's Answer: {req.answer}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Evaluate on:</span></p>
+<p class="p1"><span class="s1">1. Relevance — did they actually answer it?</span></p>
+<p class="p1"><span class="s1">2. Specific examples / STAR method</span></p>
+<p class="p1"><span class="s1">3. Technical accuracy (if technical)</span></p>
+<p class="p1"><span class="s1">4. Keywords and terminology from the JD</span></p>
+<p class="p1"><span class="s1">5. Clarity and conciseness</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Return this exact JSON:</span></p>
+<p class="p1"><span class="s1">{{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"score": &lt;integer 0-100&gt;,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"feedback": "3-4 sentences of honest specific feedback referencing their actual answer",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"improved_answer": "a rewritten version that would score 90+, in first person, natural tone",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"keywords_used": ["keywords from JD they used well"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"keywords_missing": ["important keywords/concepts they should have mentioned"]</span></p>
+<p class="p1"><span class="s1">}}</span></p>
+<p class="p1"><span class="s1">"""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>max_tokens=1000,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>temperature=0.3,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return json.loads(response.choices[0].message.content.strip())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except json.JSONDecodeError:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail="Model returned invalid JSON")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># ROUTES — RESUME ANALYSIS</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.post("/analyze-resume/", response_model=ResumeAnalysis)</span></p>
+<p class="p1"><span class="s1">async def analyze_resume(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>file:<span class="Apple-converted-space">            </span>UploadFile <span class="Apple-converted-space">    </span>= File(...),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>job_description: Optional[str] = Form(default="")</span></p>
+<p class="p1"><span class="s1">):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if file.content_type != "application/pdf":</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=400, detail="Only PDF files are allowed")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>contents = await file.read()</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if len(contents) &gt; 5 * 1024 * 1024:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>text = extract_text_from_pdf(contents)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if not text.strip():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>raise HTTPException(status_code=400, detail="Could not extract text from PDF")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail="Failed to process PDF file")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>text = text[:8000]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not is_valid_resume(text):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"summary_feedback": "The uploaded document does not appear to be a valid professional resume.",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"strengths": [],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"weaknesses": ["Missing essential resume sections or professional formatting."],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"missing_skills": [],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"ats_score": 0, "ats_breakdown": {},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"recommendations": ["Upload a structured resume including Experience, Education, Skills, and contact information."],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"weak_bullets": [], "jd_match": None,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>ats_score, ats_breakdown = calculate_ats_score(text, job_description)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>weak_bullets = extract_weak_bullets(text)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>jd_match <span class="Apple-converted-space">    </span>= analyze_jd_match(text, job_description) if job_description and job_description.strip() else None</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>qi = ats_breakdown["quantification"]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>vi = ats_breakdown["action_verbs"]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>ki = ats_breakdown["keywords"]</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>scoring_context = f"""</span></p>
+<p class="p1"><span class="s1">ATS Score: {ats_score}/100</span></p>
+<p class="p1"><span class="s1">Quantification: {qi['metric_density_pct']}% of bullet lines contain metrics ({qi['points']}/{qi['max']} pts)</span></p>
+<p class="p1"><span class="s1">Action Verbs: {vi['strong_verb_lines']} strong, {vi['weak_phrase_lines']} weak ({vi['points']}/{vi['max']} pts)</span></p>
+<p class="p1"><span class="s1">Keywords: {ki['total_keywords_found']} total across {ki['domains_covered']} domains ({ki['points']}/{ki['max']} pts)</span></p>
+<p class="p1"><span class="s1">"""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>jd_context = (</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>f"\nJob Description Match: {jd_match['match_pct']}% — missing: {', '.join(jd_match['missing_keywords'][:8])}"</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>if jd_match else ""</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>)</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>response = openai_client.chat.completions.create(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>model="gpt-4o-mini",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>response_format={"type": "json_object"},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>messages=[</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{"role": "system", "content": "You are a professional resume coach and ATS specialist. Return ONLY valid JSON. Be specific and actionable."},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{"role": "user", "content": f"""</span></p>
+<p class="p1"><span class="s1">Evaluate this resume. Use the scoring data for targeted feedback.</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">{scoring_context}{jd_context}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Resume:</span></p>
+<p class="p1"><span class="s1">{text}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Return this exact JSON:</span></p>
+<p class="p1"><span class="s1">{{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"summary_feedback": "2-3 sentence overall assessment mentioning ATS score and key issues",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"strengths": ["3-5 specific strengths with evidence"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"weaknesses": ["3-5 specific weaknesses tied to scoring data"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"missing_skills": ["skills/keywords missing that are common in this field"],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"recommendations": ["5 specific actionable improvements ordered by impact"]</span></p>
+<p class="p1"><span class="s1">}}</span></p>
+<p class="p1"><span class="s1">"""}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>max_tokens=1200,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>temperature=0.3,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>out = json.loads(response.choices[0].message.content.strip())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>out["ats_score"] <span class="Apple-converted-space">    </span>= ats_score</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>out["ats_breakdown"] = ats_breakdown</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>out["weak_bullets"]<span class="Apple-converted-space">  </span>= weak_bullets</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>out["jd_match"]<span class="Apple-converted-space">      </span>= jd_match</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except json.JSONDecodeError:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail="Model returned invalid JSON")</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail=f"OpenAI error: {str(e)}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return out</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># ROUTES — BULLET REWRITER</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.post("/rewrite-bullet/", response_model=RewriteResponse)</span></p>
+<p class="p1"><span class="s1">async def rewrite_bullet(req: RewriteRequest):</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>if not req.bullet or len(req.bullet.strip()) &lt; 5:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=400, detail="Bullet text too short")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>job_hint = f"\nJob context: {req.job_context}" if req.job_context else ""</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>try:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>response = openai_client.chat.completions.create(</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>model="gpt-4o-mini",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>response_format={"type": "json_object"},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>messages=[</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{"role": "system", "content": "You are an expert resume writer. Rewrite weak bullet points to be powerful, metric-driven, and ATS-optimized. Return only JSON."},</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">                </span>{"role": "user", "content": f"""</span></p>
+<p class="p1"><span class="s1">Rewrite this weak resume bullet point to be much stronger.{job_hint}</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Original: "{req.bullet}"</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Rules:</span></p>
+<p class="p1"><span class="s1">- Start with a strong action verb (Led, Built, Engineered, Optimized, Delivered, etc.)</span></p>
+<p class="p1"><span class="s1">- Add a specific metric or quantifiable result (placeholder like [X%] is fine)</span></p>
+<p class="p1"><span class="s1">- Include 1-2 relevant ATS keywords naturally</span></p>
+<p class="p1"><span class="s1">- Keep it under 20 words</span></p>
+<p class="p1"><span class="s1">- Sound natural, not robotic</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">Return JSON:</span></p>
+<p class="p1"><span class="s1">{{</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"rewritten": "the improved bullet point",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">  </span>"explanation": "one sentence explaining what was improved and why"</span></p>
+<p class="p1"><span class="s1">}}</span></p>
+<p class="p1"><span class="s1">"""}</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>],</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>max_tokens=300,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>temperature=0.5,</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>)</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>return json.loads(response.choices[0].message.content.strip())</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>except Exception as e:</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>raise HTTPException(status_code=500, detail=f"Rewrite failed: {str(e)}")</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p1"><span class="s1"># HEALTH CHECK</span></p>
+<p class="p1"><span class="s1"># ─────────────────────────────────────────────────────────────────────────────</span></p>
+<p class="p2"><span class="s1"></span><br></p>
+<p class="p1"><span class="s1">@app.get("/health")</span></p>
+<p class="p1"><span class="s1">async def health():</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>return {</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"status":<span class="Apple-converted-space">    </span>"ok",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"timestamp": datetime.now(timezone.utc).isoformat(),</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>"endpoints": [</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"POST /analyze-resume/",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"POST /rewrite-bullet/",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"POST /generate-interview/",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"POST /evaluate-answer/",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"GET<span class="Apple-converted-space">  </span>/jobs/?country=IN|US&amp;keyword=&amp;page=",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"GET<span class="Apple-converted-space">  </span>/jobs/search/?q=&amp;country=IN|US",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"POST /jobs/refresh/",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">            </span>"GET<span class="Apple-converted-space">  </span>/health",</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">        </span>]</span></p>
+<p class="p1"><span class="s1"><span class="Apple-converted-space">    </span>}</span></p>
+</body>
+</html>
