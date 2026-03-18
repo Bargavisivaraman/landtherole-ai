@@ -12,8 +12,15 @@ import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
+
+# Jobs pipeline (real data only — no mock/fake jobs)
+from jobs import (
+    run_ingestion, build_jobs_query,
+    US_QUERIES, INDIA_QUERIES,
+    _classify_industry, _classify_experience,
+)
 
 load_dotenv()
 
@@ -203,22 +210,6 @@ STOPWORDS = {
     "provide","include","continue","set","learn","change","lead","understand",
     "ensure","drive","support","manage","review",
 }
-
-INDIA_QUERIES = [
-    "software engineer India",
-    "data scientist India",
-    "product manager India",
-    "frontend developer India",
-    "backend developer India",
-]
-US_QUERIES = [
-    "software engineer USA",
-    "data scientist USA",
-    "product manager USA",
-    "frontend developer USA",
-    "machine learning engineer USA",
-]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -446,46 +437,18 @@ def extract_weak_bullets(text):
 # JOB FEED — FETCH + CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def fetch_and_store_jobs(queries: list, country: str):
-    headers = {
-        "X-RapidAPI-Key":  JSEARCH_API_KEY,
-        "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
-    }
-    async with httpx.AsyncClient(timeout=15) as http:
-        for query in queries:
-            try:
-                resp = await http.get(
-                    f"{JSEARCH_BASE}/search",
-                    headers=headers,
-                    params={"query": query, "num_pages": "2", "date_posted": "today"},
-                )
-                resp.raise_for_status()
-                data = resp.json().get("data", [])
-                rows = [{
-                    "job_id":          j.get("job_id", ""),
-                    "title":           j.get("job_title", ""),
-                    "company":         j.get("employer_name", ""),
-                    "location":        f"{j.get('job_city','')}, {j.get('job_state','')}".strip(", "),
-                    "description":     (j.get("job_description") or "")[:2000],
-                    "url":             j.get("job_apply_link", ""),
-                    "employment_type": j.get("job_employment_type", ""),
-                    "posted_at":       j.get("job_posted_at_datetime_utc", ""),
-                    "fetched_at":      datetime.now(timezone.utc).isoformat(),
-                    "country":         country,
-                } for j in data]
-                if rows:
-                    supabase.table("jobs").upsert(rows, on_conflict="job_id").execute()
-                    print(f"[Jobs] Upserted {len(rows)} jobs — '{query}' [{country}]")
-                await asyncio.sleep(1)
-            except Exception as e:
-                print(f"[Jobs] Error on '{query}': {e}")
-
-
 async def refresh_all_jobs():
-    print(f"[Jobs] Refreshing at {datetime.now(timezone.utc)}")
-    await fetch_and_store_jobs(INDIA_QUERIES, "IN")
-    await fetch_and_store_jobs(US_QUERIES,    "US")
-    print("[Jobs] Done.")
+    """Scheduled ingestion — runs every 8 hours. Uses jobs.py pipeline."""
+    print(f"[Jobs] Starting scheduled refresh at {datetime.now(timezone.utc)}")
+    if not JSEARCH_API_KEY:
+        print("[Jobs] JSEARCH_API_KEY not set — skipping ingestion")
+        return
+    try:
+        stats_in = await run_ingestion(supabase, JSEARCH_API_KEY, INDIA_QUERIES, "IN")
+        stats_us = await run_ingestion(supabase, JSEARCH_API_KEY, US_QUERIES,    "US")
+        print(f"[Jobs] Done — IN: {stats_in} | US: {stats_us}")
+    except Exception as e:
+        print(f"[Jobs] Refresh failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,7 +459,11 @@ scheduler = AsyncIOScheduler()
 
 @app.on_event("startup")
 async def startup_event():
-    scheduler.add_job(refresh_all_jobs, "interval", hours=1, id="job_refresh")
+    # Refresh every 8 hours — tune to match your JSearch plan:
+    #   Free: 500 req/mo → set hours=24
+    #   Basic ($10): 3000 req/mo → set hours=8
+    #   Pro ($30): 20000 req/mo → set hours=2
+    scheduler.add_job(refresh_all_jobs, "interval", hours=8, id="job_refresh")
     scheduler.start()
     asyncio.create_task(refresh_all_jobs())
     print("[Startup] Scheduler started.")
@@ -510,61 +477,72 @@ async def shutdown_event():
 # ROUTES — JOBS
 # ─────────────────────────────────────────────────────────────────────────────
 
+@app.get("/warmup")
+async def warmup():
+    """Lightweight ping — frontend calls this first to wake the server."""
+    return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+
+
 @app.get("/jobs/")
 async def get_jobs(
-    country:  str            = Query("IN", description="IN or US"),
-    keyword:  Optional[str]  = Query(None),
-    page:     int            = Query(1, ge=1),
-    per_page: int            = Query(20, ge=1, le=50),
+    country:          str           = Query("US"),
+    keyword:          Optional[str] = Query(None),
+    industry:         Optional[str] = Query(None),
+    job_type:         Optional[str] = Query(None),
+    experience_level: Optional[str] = Query(None),
+    work_mode:        Optional[str] = Query(None),
+    state_filter:     Optional[str] = Query(None),
+    date_range:       Optional[str] = Query(None),
+    page:             int           = Query(1, ge=1),
+    per_page:         int           = Query(20, ge=1, le=50),
 ):
     try:
         offset = (page - 1) * per_page
-        q = supabase.table("jobs").select("*").eq("country", country.upper())
-        if keyword:
-            q = q.or_(f"title.ilike.%{keyword}%,description.ilike.%{keyword}%")
+        q = build_jobs_query(
+            supabase,
+            country          = country,
+            keyword          = keyword,
+            industry         = industry,
+            job_type         = job_type,
+            experience_level = experience_level,
+            work_mode        = work_mode,
+            state_filter     = state_filter,
+            date_range       = date_range,
+        )
         result = q.order("fetched_at", desc=True).range(offset, offset + per_page - 1).execute()
-        return {"jobs": result.data, "page": page, "country": country.upper(), "count": len(result.data)}
+        jobs   = result.data or []
+        return {
+            "jobs":    jobs,
+            "page":    page,
+            "country": country.upper(),
+            "count":   len(jobs),
+            "has_more": len(jobs) == per_page,
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch jobs: {str(e)}")
+        print(f"[/jobs/] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to query jobs: {str(e)}")
 
 
-@app.get("/jobs/search/")
-async def search_jobs(
-    q:       str = Query(...),
-    country: str = Query("IN"),
-    page:    int = Query(1, ge=1),
-):
-    if not JSEARCH_API_KEY:
-        raise HTTPException(status_code=503, detail="Job search API not configured")
+@app.get("/jobs/status/")
+async def ingestion_status():
+    """Returns the last 5 ingestion run results for monitoring."""
     try:
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.get(
-                f"{JSEARCH_BASE}/search",
-                headers={"X-RapidAPI-Key": JSEARCH_API_KEY, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
-                params={"query": f"{q} {'India' if country.upper()=='IN' else 'USA'}", "num_pages": str(page)},
-            )
-            resp.raise_for_status()
-            data = resp.json().get("data", [])
-        jobs = [{
-            "job_id":          j.get("job_id"),
-            "title":           j.get("job_title"),
-            "company":         j.get("employer_name"),
-            "location":        f"{j.get('job_city','')}, {j.get('job_state','')}".strip(", "),
-            "description":     (j.get("job_description") or "")[:500],
-            "url":             j.get("job_apply_link"),
-            "employment_type": j.get("job_employment_type"),
-            "posted_at":       j.get("job_posted_at_datetime_utc"),
-            "country":         country.upper(),
-        } for j in data]
-        return {"jobs": jobs, "query": q, "country": country.upper(), "count": len(jobs)}
+        result = (
+            supabase.table("ingestion_runs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+        return {"runs": result.data or []}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/jobs/refresh/")
 async def manual_refresh():
     asyncio.create_task(refresh_all_jobs())
-    return {"message": "Job refresh triggered"}
+    return {"message": "Ingestion triggered — check /jobs/status/ for progress"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
