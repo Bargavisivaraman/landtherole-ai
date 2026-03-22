@@ -28,12 +28,8 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://landtherole-ai.vercel.app"
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -222,6 +218,13 @@ def extract_text_from_pdf(contents: bytes) -> str:
         extracted = page.extract_text()
         if extracted:
             text += extracted + "\n"
+    return text
+
+
+def sanitize_text(text: str) -> str:
+    """Strip null bytes and control characters that make JSON request bodies unparseable."""
+    text = text.replace('\x00', '')                                  # null bytes — #1 cause of 400s
+    text = re.sub(r'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)  # other illegal control chars
     return text
 
 
@@ -694,7 +697,7 @@ async def analyze_resume(
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to process PDF file")
 
-    text = text[:8000]
+    text = sanitize_text(text[:8000])
 
     if not is_valid_resume(text):
         return {
@@ -707,6 +710,7 @@ async def analyze_resume(
             "weak_bullets": [], "jd_match": None,
         }
 
+    job_description = sanitize_text(job_description or "")
     ats_score, ats_breakdown = calculate_ats_score(text, job_description)
     weak_bullets = extract_weak_bullets(text)
     jd_match     = analyze_jd_match(text, job_description) if job_description and job_description.strip() else None
