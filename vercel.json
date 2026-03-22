@@ -1,5 +1,5 @@
 {
-  "buildCommand": "cd backend/frontend/frontend && npm install && npm run build",
-  "outputDirectory": "backend/frontend/frontend/dist",
-  "installCommand": "echo 'install handled in buildCommand'"
+  "buildCommand": "npm install && npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite"
 }

@@ -935,6 +935,7 @@ function App() {
           {tab === "interview" && <InterviewPage prefillTitle={interviewTitle} prefillCompany={interviewCompany} />}
         </div>
       </main>
+      <Footer />
     </>
   );
 }
