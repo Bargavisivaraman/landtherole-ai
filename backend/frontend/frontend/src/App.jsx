@@ -796,14 +796,34 @@ function ResumePage() {
     const formData = new FormData();
     formData.append("file", file);
     if (jdText.trim()) formData.append("job_description", jdText.trim());
-    try {
-      const res = await fetch(`${API}/analyze-resume/`, { method: "POST", body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Failed to analyze resume");
-      setResult(data);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (err) { setError(err.message); }
-    finally { setLoading(false); }
+
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 1) setError(`⏳ Server is waking up… (attempt ${attempt}/${MAX_RETRIES})`);
+        const res = await fetch(`${API}/analyze-resume/`, { method: "POST", body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to analyze resume");
+        setError(null);
+        setResult(data);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        setLoading(false);
+        return;
+      } catch (err) {
+        const isColdStart = err.message.toLowerCase().includes("fetch") ||
+                            err.message.toLowerCase().includes("network") ||
+                            err.message.toLowerCase().includes("failed to fetch");
+        if (isColdStart && attempt < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, attempt * 8000));
+          continue;
+        }
+        setError(isColdStart
+          ? "⏳ Server is still waking up. Please wait 30 seconds and try again."
+          : err.message);
+        break;
+      }
+    }
+    setLoading(false);
   };
 
   const resetApp = () => { setResult(null); setFile(null); setError(null); setJdText(""); setJdExpanded(false); };
