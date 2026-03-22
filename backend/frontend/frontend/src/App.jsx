@@ -3,6 +3,9 @@ import "./App.css";
 
 const API = "https://landtherole-ai.onrender.com";
 
+// Fire-and-forget warm-up ping so Render server is hot before first user action
+fetch(`${API}/jobs/?country=US&per_page=1`).catch(() => {});
+
 // ── FOOTER ────────────────────────────────────────────────────────────────────
 function Footer() {
   return (
@@ -13,15 +16,21 @@ function Footer() {
 }
 
 // ── NAV ───────────────────────────────────────────────────────────────────────
+const NAV_ICONS = {
+  resume: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
+  jobs:   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>,
+  interview: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>,
+};
+
 function Nav({ tab, setTab, resetApp }) {
   const tabs = [
-    { id: "resume",    label: "📄 Resume" },
-    { id: "jobs",      label: "💼 Jobs" },
-    { id: "interview", label: "🎤 Interview Prep" },
+    { id: "resume",    label: "Resume" },
+    { id: "jobs",      label: "Jobs" },
+    { id: "interview", label: "Interview Prep" },
   ];
   return (
     <nav className="main-nav">
-      <div className="nav-logo" onClick={() => { resetApp(); setTab("resume"); }}>🎯 LandTheRole.ai</div>
+      <div className="nav-logo" onClick={() => { resetApp(); setTab("resume"); }}>LandTheRole.ai</div>
       <div className="nav-tabs">
         {tabs.map(t => (
           <button
@@ -29,7 +38,7 @@ function Nav({ tab, setTab, resetApp }) {
             className={`nav-tab ${tab === t.id ? "active" : ""}`}
             onClick={() => setTab(t.id)}
           >
-            {t.label}
+            <span className="nav-icon">{NAV_ICONS[t.id]}</span>{t.label}
           </button>
         ))}
       </div>
@@ -140,7 +149,7 @@ function BulletRewriter({ bullets, jobContext }) {
   return (
     <div className="bullet-rewriter reveal">
       <div className="rewriter-intro">
-        <span className="rewriter-badge">✨ AI Rewriter</span>
+        <span className="rewriter-badge">AI Rewriter</span>
         <p>Click any weak bullet below to instantly improve it with strong action verbs, metrics, and ATS keywords.</p>
       </div>
       <div className="bullet-list">
@@ -165,7 +174,7 @@ function BulletRewriter({ bullets, jobContext }) {
                 <p>{result.rewritten}</p>
                 <button className="copy-btn" onClick={copy}>{copied ? "✓ Copied!" : "Copy"}</button>
               </div>
-              {result.explanation && <p className="rewrite-explanation">💡 {result.explanation}</p>}
+              {result.explanation && <p className="rewrite-explanation">{result.explanation}</p>}
             </>
           )}
         </div>
@@ -225,6 +234,25 @@ function formatEmploymentType(t) {
   return { FULLTIME:"Full-time", PARTTIME:"Part-time", CONTRACTOR:"Contract", INTERN:"Internship" }[t.toUpperCase()] || t;
 }
 
+const CACHE_KEY = "ltr_jobs_cache";
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function SkeletonJobCard() {
+  return (
+    <div className="job-card skeleton-card">
+      <div className="job-card-header">
+        <div className="job-card-info">
+          <div className="skeleton-line" style={{ width: "30%", height: "18px", marginBottom: "10px" }} />
+          <div className="skeleton-line" style={{ width: "55%", height: "22px", marginBottom: "8px" }} />
+          <div className="skeleton-line" style={{ width: "40%", height: "16px" }} />
+        </div>
+      </div>
+      <div className="skeleton-line" style={{ width: "100%", height: "14px", marginTop: "14px" }} />
+      <div className="skeleton-line" style={{ width: "80%", height: "14px", marginTop: "8px" }} />
+    </div>
+  );
+}
+
 function JobsTab({ onPrepInterview }) {
   const [country, setCountry]     = useState("US");
   const [query, setQuery]         = useState("");
@@ -240,6 +268,18 @@ function JobsTab({ onPrepInterview }) {
     industry: "", jobType: "", expLevel: "", dateRange: "all", remote: false, stateFilter: "",
   });
   const abortRef = useRef(null);
+
+  // Load from cache on mount
+  useEffect(() => {
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
+      if (cached && Date.now() - cached.ts < CACHE_TTL && cached.country === "US") {
+        setJobs(cached.jobs);
+        setHasMore(cached.hasMore);
+        setPage(cached.page);
+      }
+    } catch {}
+  }, []);
 
   const setFilter = (key, val) => setFilters(f => ({ ...f, [key]: val }));
 
@@ -284,8 +324,18 @@ function JobsTab({ onPrepInterview }) {
         throw new Error(body.detail || `Server error ${res.status}`);
       }
       const data = await res.json();
-      if (pg === 1) setJobs(data.jobs || []);
-      else setJobs(prev => [...prev, ...(data.jobs || [])]);
+      const newJobs = pg === 1 ? (data.jobs || []) : null;
+      if (pg === 1) {
+        setJobs(data.jobs || []);
+        try {
+          sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+            jobs: data.jobs || [], hasMore: data.has_more === true,
+            page: pg, ts: Date.now(), country: c,
+          }));
+        } catch {}
+      } else {
+        setJobs(prev => [...prev, ...(data.jobs || [])]);
+      }
       setHasMore(data.has_more === true);
       setPage(pg);
     } catch (e) {
@@ -453,7 +503,9 @@ function JobsTab({ onPrepInterview }) {
       ) : null}
 
       {!error && (loading && jobs.length === 0 ? (
-        <div className="jobs-loading"><span className="spinner" /> Loading jobs…</div>
+        <div className="jobs-list">
+          {Array.from({ length: 6 }).map((_, i) => <SkeletonJobCard key={i} />)}
+        </div>
       ) : jobs.length === 0 && !loading ? (
         <div className="jobs-empty">No jobs found. Try adjusting your filters or search terms.</div>
       ) : (
@@ -500,7 +552,7 @@ function JobsTab({ onPrepInterview }) {
                         <span className="apply-btn apply-na">No Link</span>
                       )}
                       <button className="interview-btn" onClick={() => onPrepInterview(job.title, job.company)}>
-                        🎤 Prep Interview
+                        Prep Interview
                       </button>
                     </div>
                   </div>
@@ -588,7 +640,7 @@ function InterviewPage({ prefillTitle, prefillCompany }) {
   return (
     <div className="interview-page">
       <div className="interview-header">
-        <h2>🎤 Interview Prep</h2>
+        <h2>Interview Prep</h2>
         <p>Get tailored questions from any job description — then practice your answers with AI feedback</p>
       </div>
 
@@ -596,7 +648,7 @@ function InterviewPage({ prefillTitle, prefillCompany }) {
         <div className="interview-setup card">
           {prefillTitle && (
             <div className="prefill-banner">
-              ✅ Prepped for: <strong>{prefillTitle}</strong>{prefillCompany ? ` at ${prefillCompany}` : ""}
+              Prepped for: <strong>{prefillTitle}</strong>{prefillCompany ? ` at ${prefillCompany}` : ""}
             </div>
           )}
           <label className="field-label">Job Description *</label>
@@ -662,7 +714,7 @@ function InterviewPage({ prefillTitle, prefillCompany }) {
                       <p>{q.why_asked}</p>
                     </div>
                     <div className="hints">
-                      <span className="hints-label">💡 Good answer should include:</span>
+                      <span className="hints-label">Good answer should include:</span>
                       <ul>{(q.good_answer_hints || []).map((h, j) => <li key={j}>{h}</li>)}</ul>
                     </div>
                     <div className="answer-section">
@@ -693,7 +745,7 @@ function InterviewPage({ prefillTitle, prefillCompany }) {
                         </div>
                         {evaluations[q.id].keywords_used?.length > 0 && (
                           <div className="eval-keywords">
-                            <h5>✅ Keywords Used Well</h5>
+                            <h5>Keywords Used Well</h5>
                             <div className="keyword-chips">
                               {evaluations[q.id].keywords_used.map((k, j) => <span key={j} className="chip chip-matched">{k}</span>)}
                             </div>
@@ -701,14 +753,14 @@ function InterviewPage({ prefillTitle, prefillCompany }) {
                         )}
                         {evaluations[q.id].keywords_missing?.length > 0 && (
                           <div className="eval-keywords">
-                            <h5>⚠️ Keywords to Add</h5>
+                            <h5>Keywords to Add</h5>
                             <div className="keyword-chips">
                               {evaluations[q.id].keywords_missing.map((k, j) => <span key={j} className="chip chip-missing">{k}</span>)}
                             </div>
                           </div>
                         )}
                         <div className="eval-improved">
-                          <h5>⭐ Improved Answer</h5>
+                          <h5>Improved Answer</h5>
                           <p>{evaluations[q.id].improved_answer}</p>
                           <button className="copy-btn" onClick={() => navigator.clipboard.writeText(evaluations[q.id].improved_answer)}>
                             Copy
@@ -771,13 +823,13 @@ function ResumePage() {
   if (!result) return (
     <div className="hero">
       <div className="card">
-        <div className="logo-tag">🎯 LandTheRole.ai</div>
+        <div className="logo-tag">LandTheRole.ai</div>
         <h1>Get Hired Faster</h1>
         <p>AI-powered resume scoring, job match analysis, and instant bullet rewrites — built to get you shortlisted.</p>
         <div className="upload-row">
           <label className="file-label">
             <input type="file" accept=".pdf" onChange={handleFileChange} />
-            <span className="file-btn">📄 {file ? file.name : "Choose Resume PDF"}</span>
+            <span className="file-btn">{file ? file.name : "Choose Resume PDF"}</span>
           </label>
         </div>
         <div className="jd-toggle">
@@ -819,15 +871,15 @@ function ResumePage() {
           <p>{result.summary_feedback}</p>
         </div>
       </div>
-      {result.jd_match && (<><h3 className="reveal">🎯 Job Description Match</h3><JDMatchPanel jd={result.jd_match} /></>)}
-      <h3 className="reveal">✅ Strengths</h3>
+      {result.jd_match && (<><h3 className="reveal">Job Description Match</h3><JDMatchPanel jd={result.jd_match} /></>)}
+      <h3 className="reveal">Strengths</h3>
       <ul className="strengths stagger-list">{(result.strengths || []).map((s, i) => <li key={i}>{s}</li>)}</ul>
-      <h3 className="reveal">⚠️ Weaknesses</h3>
+      <h3 className="reveal">Weaknesses</h3>
       <ul className="weaknesses stagger-list">{(result.weaknesses || []).map((w, i) => <li key={i}>{w}</li>)}</ul>
-      {result.weak_bullets?.length > 0 && (<><h3 className="reveal">✏️ Rewrite Weak Bullets</h3><BulletRewriter bullets={result.weak_bullets} jobContext={jdText} /></>)}
-      <h3 className="reveal">🧩 Missing Skills</h3>
+      {result.weak_bullets?.length > 0 && (<><h3 className="reveal">Rewrite Weak Bullets</h3><BulletRewriter bullets={result.weak_bullets} jobContext={jdText} /></>)}
+      <h3 className="reveal">Missing Skills</h3>
       <ul className="stagger-list">{(result.missing_skills || []).map((m, i) => <li key={i}>{m}</li>)}</ul>
-      <h3 className="reveal">💡 Recommendations</h3>
+      <h3 className="reveal">Recommendations</h3>
       <ul className="stagger-list">{(result.recommendations || []).map((r, i) => <li key={i}>{r}</li>)}</ul>
       <div className="reveal" style={{ marginTop: "56px", textAlign: "center" }}>
         <button className="analyze-btn" onClick={resetApp}>Analyze Another Resume</button>
@@ -857,9 +909,11 @@ function App() {
     <>
       <Nav tab={tab} setTab={setTab} resetApp={resetApp} />
       <main className="main-content">
-        {tab === "resume"    && <ResumePage />}
-        {tab === "jobs"      && <JobsTab onPrepInterview={handlePrepInterview} />}
-        {tab === "interview" && <InterviewPage prefillTitle={interviewTitle} prefillCompany={interviewCompany} />}
+        <div className="tab-panel" key={tab}>
+          {tab === "resume"    && <ResumePage />}
+          {tab === "jobs"      && <JobsTab onPrepInterview={handlePrepInterview} />}
+          {tab === "interview" && <InterviewPage prefillTitle={interviewTitle} prefillCompany={interviewCompany} />}
+        </div>
       </main>
     </>
   );
